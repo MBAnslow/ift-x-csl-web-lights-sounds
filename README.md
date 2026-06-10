@@ -121,8 +121,8 @@ signals combining.
 - **Trail slider** — afterglow, so colours linger and overlap
 - **Bead colour mix slider** — how strongly beads tint the light passing through
 - **Signal decay slider** — half-life of a ripple's strength over time; lower values make the signal die out quickly (only nearby lights respond), higher values let it carry across the web
-- **Overlap reach / emission sliders** — how far an overlap spreads (active-node hops) and how strongly it falls off per hop
-- **Click threshold slider** — the signal level at which an edge registers a touch
+- **Area reach / emission sliders** — how far the Area tool spreads (active-node hops) and how strongly it falls off per hop
+- **Signal meter (noise / hover / touch handles)** — drag the two boundary handles on the live meter to set the signal levels that count as noise, hovering, and a touch (see below); `C` calibrates them automatically
 - **Ambient gain / Hover gain sliders** — amplify the idle ambient and the hover response independently; both stay normalised to the bands, so they only change how the basic look reads *within* the thresholds
 - **Volume slider** — master level of the responsive soundscape
 - **Drone / Chime volume sliders** — trim the bead chord drone and the ring-touch chimes independently
