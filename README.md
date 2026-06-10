@@ -65,33 +65,17 @@ Prefer a head start? Generate a sample web:
 .venv/bin/python run.py gen --spokes 8 --rings 7
 ```
 
-## 2. Preview the events
-
-```bash
-.venv/bin/python run.py sim
-```
-
-Interactions are **edge-based**: hover the canvas to highlight the nearest
-strand, then click to fire the active tool from that edge. Which LEDs light
-depends on the edge — its endpoint lights and their neighbours.
-
-- `1` propagate — distance — wavefront grows from the clicked edge's endpoints, timed by physical strand length
-- `2` propagate — hops — same, but timed by edge count, so every node-to-node step is uniform regardless of geometry
-- `3` overlap — lights the edge's endpoint lights and their k-hop neighbours along the strands; disabled LEDs are skipped, so neighbours route to the nearest *enabled* node. The **Overlap reach** slider sets k (1–4 hops).
-- `4` charge & release (press and hold an edge) — it brightens the longer you hold, then releases a brighter propagation wave on mouse-up
-- `SPACE` cycle colour
-- `A` cycle ambient mode — `off / shimmer / breathe / twinkle / wander / rainbow`
-- **Trail slider** — how long a light stays on after it's activated (0 = snap off, up to 5 s).
-- **Distant glow slider** — how brightly *distant* lights respond to a single click. The edge's own lights always light fully; farther lights scale by `falloff^hops`, so at a low setting they barely glow and **repeated clicks build them up** (contributions add). Applies to overlap, charge and propagate. (The charge *release* always discharges at full brightness.)
-- `X` clear, `ESC` quit
-
-## 2b. Dream-catcher mode
+## 2. Play the web (dream-catcher)
 
 ```bash
 .venv/bin/python run.py dream
 ```
 
-Same web, but some nodes are **beads** with their own colour. When a ripple
+This is the main interactive app — the web reacts to your touch with **light and
+sound**. Interactions are **edge-based**: hover the canvas to highlight the
+nearest strand, then click to fire the active tool from that edge.
+
+Some nodes of the web are **beads** with their own colour. When a ripple
 reaches a bead it flares brighter, and the light flowing *past* it onto the
 nodes downstream takes on a share of the bead's colour. Ripples that cross
 several beads blend their colours, so the whole web mixes.
@@ -181,7 +165,7 @@ chatter). The sim mirrors this exactly:
 - **Calibrate** with `C`: press once to arm, then capture three levels —
   *background* (hands clear), *hover* (hold a hand near), *touch* (hold a touch).
   The threshold is set automatically midway between the hover and touch ranges.
-  Fine-tune afterwards with the **Click threshold** slider.
+  Fine-tune afterwards by dragging the **noise / touch handles** on the meter.
 
 Where ripples meet, their colours **average** (intensity-weighted) like
 combining signals.
@@ -199,10 +183,14 @@ Find the port, then stream:
 
 ```bash
 .venv/bin/python run.py ports
-.venv/bin/python run.py sim --serial /dev/tty.usbserial-XXXX --baud 921600
+.venv/bin/python run.py dream --serial /dev/tty.usbserial-XXXX --baud 921600
 ```
 
-Everything you do in the simulator is sent live to the LEDs.
+Everything you do in the dream-catcher is sent live to the LEDs.
+
+> A lower-level event preview, `run.py sim`, also exists for testing raw
+> propagate / overlap / charge events (no beads or sound). It streams to serial
+> the same way with `--serial`.
 
 ## 4. Backend server (live installation)
 
@@ -300,7 +288,7 @@ spiderweb/
   simulator.py    live preview + serial streaming (edge-based tools)
   dream.py        dream-catcher mode: beads tint & mix the light
   webgen.py       sample radial orb-web
-  cli.py          `editor | sim | dream | gen | ports`
+  cli.py          `editor | dream | sim | gen | serve | ports`
 firmware/spiderweb_esp/spiderweb_esp.ino   ESP32 + SK6805 reader
 config/web.json   your saved layout
 PROTOCOL.md       wire format
