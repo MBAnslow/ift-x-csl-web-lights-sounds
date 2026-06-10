@@ -45,14 +45,28 @@ def panel_layout(rows, origin=(12, 12), width=300):
     return panel_rect, row_rects
 
 
-def draw_panel(screen, font, title_font, title, rows, mouse_pos=None, origin=(12, 12), width=300):
-    """rows: list of (key, label, active_bool). Returns (panel_rect, row_rects)."""
+def draw_card(screen, rect):
+    """A single rounded background+border that a whole section sits on."""
+    surf = pygame.Surface(rect.size, pygame.SRCALPHA)
+    surf.fill(PANEL_BG)
+    pygame.draw.rect(surf, BORDER, surf.get_rect(), 1, border_radius=8)
+    screen.blit(surf, rect.topleft)
+
+
+def draw_panel(screen, font, title_font, title, rows, mouse_pos=None, origin=(12, 12),
+               width=300, fill=True):
+    """rows: list of (key, label, active_bool). Returns (panel_rect, row_rects).
+
+    When ``fill`` is False the panel's own background/border is skipped, so the
+    title and rows render directly on a shared section card drawn behind them.
+    """
     panel_rect, row_rects = panel_layout(rows, origin, width)
 
-    panel = pygame.Surface(panel_rect.size, pygame.SRCALPHA)
-    panel.fill(PANEL_BG)
-    pygame.draw.rect(panel, BORDER, panel.get_rect(), 1, border_radius=8)
-    screen.blit(panel, origin)
+    if fill:
+        panel = pygame.Surface(panel_rect.size, pygame.SRCALPHA)
+        panel.fill(PANEL_BG)
+        pygame.draw.rect(panel, BORDER, panel.get_rect(), 1, border_radius=8)
+        screen.blit(panel, origin)
     screen.blit(title_font.render(title, True, TITLE), (origin[0] + PAD, origin[1] + PAD))
 
     chip_w = 36
@@ -89,12 +103,13 @@ def value_from_x(track, x):
     return min(1.0, max(0.0, (x - track.x) / max(track.width, 1)))
 
 
-def draw_slider(screen, font, title, value, origin, width=300, height=46):
+def draw_slider(screen, font, title, value, origin, width=300, height=46, fill=True):
     panel, track = slider_layout(origin, width, height)
-    bg = pygame.Surface(panel.size, pygame.SRCALPHA)
-    bg.fill(PANEL_BG)
-    pygame.draw.rect(bg, BORDER, bg.get_rect(), 1, border_radius=8)
-    screen.blit(bg, origin)
+    if fill:
+        bg = pygame.Surface(panel.size, pygame.SRCALPHA)
+        bg.fill(PANEL_BG)
+        pygame.draw.rect(bg, BORDER, bg.get_rect(), 1, border_radius=8)
+        screen.blit(bg, origin)
     screen.blit(font.render(title, True, LABEL), (origin[0] + PAD, origin[1] + 8))
     pygame.draw.rect(screen, SLIDER_TRACK, track, border_radius=3)
     fill = pygame.Rect(track.x, track.y, int(track.width * value), track.height)

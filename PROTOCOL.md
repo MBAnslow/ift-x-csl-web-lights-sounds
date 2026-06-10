@@ -23,3 +23,30 @@ Default baud is `921600`. Keep `--baud` (host) and `BAUD` (firmware) in sync.
 
 This framing is Adalight-compatible, so existing Adalight tooling also works if
 you ever want it.
+
+# Serial protocol (ESP -> host) — per-ring capacitance
+
+The webbing senses capacitance **per ring**. The ESP streams one sensor frame
+periodically (e.g. every 20–30 ms) on the same serial link, in the opposite
+direction to the LED frames. It is independently framed so the two streams
+never collide.
+
+```
+byte  0 : 'S'  (0x53)
+byte  1 : 'n'  (0x6E)
+byte  2 : count        number of rings R (0 = centre, increasing outward)
+byte  3 : checksum     count XOR 0x55
+byte  4.. : payload     R * 2 bytes, one uint16 per ring, LITTLE-ENDIAN
+```
+
+- Each uint16 is the raw/averaged capacitance reading for that ring. Scale is
+  arbitrary; the host calibrates per ring (noise floor / hover / touch) and maps
+  the value into a 0..1 intensity, then decides touches by threshold.
+- Ring order matches `Web.node_rings()` on the host: ring 0 is the centre, ring
+  `R-1` the outermost.
+- The host scans for `S n`, validates the checksum, then reads `2 * count`
+  payload bytes.
+
+The host (`run.py serve`) writes LED frames and reads sensor frames on the same
+port. With no device attached it falls back to a simulated sensor source so the
+pipeline (lights + sound) still runs for development.

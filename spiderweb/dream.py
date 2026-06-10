@@ -6,14 +6,22 @@ When a ripple reaches a bead the bead flares brighter, and the light flowing
 bead's colour. Because that tint is carried along every onward strand, ripples
 that cross several beads blend their colours together and the whole web mixes.
 
+Each bead colour is also a different *lens* on the ripple travelling through it.
+No bead ever stops the signal -- it is always passed on somehow:
+
+* fast   (amber)        -- speeds the wave up on every strand beyond it
+* funnel (vivid green)  -- sends the signal on along a single direction only, in
+                           a super-saturated, extra-bright version of its colour
+* bounce (magenta)      -- duplicates the signal back the way it came
+
 Interactions are edge-based (click a strand to send a ripple); the Bead tool
-clicks a node to cycle its bead colour.
+clicks a node to cycle its bead type/colour.
 """
 from __future__ import annotations
 
+import heapq
 import random
 import time
-from collections import deque
 
 import numpy as np
 import pygame
@@ -21,13 +29,16 @@ import pygame
 from spiderweb import ui
 from spiderweb.engine import Engine
 from spiderweb.events import Ambient, Event, _gaussian
+from spiderweb.rings import RingProcessor
 from spiderweb.simulator import _draw_bulb, _make_glow_sprite
-from spiderweb.web import Web
+from spiderweb.sound import Soundscape
+from spiderweb.web import Web, _segment_distance
 
 BG = (8, 9, 14)
 SIDEBAR_BG = (6, 7, 11)
 DIVIDER = (34, 38, 50)
-SIDEBAR_W = 320
+SIDEBAR_W = 320      # left "lights" sidebar (also the web's x offset)
+RIGHT_W = 300        # right "sound" sidebar
 STRAND = (32, 36, 46)
 EDGE_HL = (255, 210, 90)
 NODE_HL = (255, 210, 90)
@@ -43,36 +54,56 @@ PALETTE = [
     (1.00, 0.45, 0.20),  # ember
 ]
 
-# bead colours, cycled by the Bead tool (vivid, well-separated hues)
-BEAD_COLORS = [
-    (1.00, 0.18, 0.30),  # red
-    (1.00, 0.55, 0.10),  # orange
-    (1.00, 0.85, 0.15),  # amber
-    (0.25, 0.95, 0.45),  # green
-    (0.20, 0.65, 1.00),  # blue
-    (0.70, 0.30, 1.00),  # violet
-    (1.00, 0.35, 0.80),  # pink
+# bead types, cycled by the Bead tool. No bead ever stops the signal -- it is
+# always passed on somehow. Each bead has its own effect on the passing wave:
+#   speed   -- multiplies the wave's speed on every strand *downstream* of the
+#              bead (>1 faster, <1 slower).
+#   funnel  -- the bead sends the signal on along just *one* outgoing direction
+#              (chosen per ripple) and intensifies it: the onward light is a
+#              super-saturated, brighter version of the bead's colour.
+#   bounce  -- the bead duplicates the signal back in the opposite direction (a
+#              return ripple toward the source), on top of the forward wave.
+# The colour is both the bead's hue and the tint mixed into the passing light.
+BEAD_TYPES = [
+    {"name": "fast",   "color": (1.00, 0.85, 0.15), "speed": 2.2, "funnel": False, "bounce": False},  # amber
+    {"name": "funnel", "color": (0.10, 1.00, 0.50), "speed": 1.0, "funnel": True,  "bounce": False},  # vivid green
+    {"name": "bounce", "color": (1.00, 0.20, 0.60), "speed": 1.0, "funnel": False, "bounce": True},   # magenta
 ]
+# colours indexed the same as BEAD_TYPES, for the many places that only need hue
+BEAD_COLORS = [t["color"] for t in BEAD_TYPES]
 
-BUTTONS = [
-    ("1", "Ripple \u2014 distance", "tool:ripple"),
-    ("2", "Ripple \u2014 hops", "tool:ripple_hops"),
-    ("3", "Overlap (edge)", "tool:overlap"),
-    ("4", "Bead (cycle colour)", "tool:bead"),
-    ("R", "Shuffle beads", "act:shuffle"),
-    ("C", "Calibrate signal", "act:cal"),
+# grouped control menus. Each is one panel of clickable rows; the keys still
+# work globally via KEYMAP regardless of which menu a control lives in.
+# LEFT column: impulse (touch/ripple interaction) then ambient.
+IMPULSE_BUTTONS = [
+    ("1", "Ripple", "tool:ripple_hops"),
+    ("2", "Area", "tool:overlap"),
     ("spc", "Ripple colour", "act:color"),
-    ("A", "Ambient", "act:ambient"),
     ("X", "Clear ripples", "act:clear"),
     ("esc", "Quit", "act:quit"),
 ]
+# the signal meter + its calibration live together in their own menu
+SIGNAL_BUTTONS = [
+    ("C", "Calibrate signal", "act:cal"),
+]
+AMBIENT_BUTTONS = [
+    ("A", "Ambient", "act:ambient"),
+]
+# RIGHT column: sound then beads.
+SOUND_BUTTONS = [
+    ("S", "Sound", "act:sound"),
+]
+BEADS_BUTTONS = [
+    ("3", "Bead (cycle type)", "tool:bead"),
+    ("R", "Shuffle beads", "act:shuffle"),
+]
 KEYMAP = {
-    pygame.K_1: "tool:ripple",
-    pygame.K_2: "tool:ripple_hops",
-    pygame.K_3: "tool:overlap",
-    pygame.K_4: "tool:bead",
+    pygame.K_1: "tool:ripple_hops",
+    pygame.K_2: "tool:overlap",
+    pygame.K_3: "tool:bead",
     pygame.K_r: "act:shuffle",
     pygame.K_c: "act:cal",
+    pygame.K_s: "act:sound",
     pygame.K_SPACE: "act:color",
     pygame.K_a: "act:ambient",
     pygame.K_x: "act:clear",
@@ -85,7 +116,7 @@ AMBIENT_DIM = 0.4
 TRAIL_MAX = 5.0
 MIX_MIN, MIX_MAX = 0.1, 0.95
 # signal decay slider: half-life (seconds) of a ripple's strength over time
-DECAY_MIN, DECAY_MAX = 0.15, 4.0
+DECAY_MIN, DECAY_MAX = 0.15, 3.0
 # overlap tool: how far the neighbourhood reaches (active-node hops) and how
 # strongly the light falls off per hop of distance
 OV_MAX_HOPS = 5
@@ -98,62 +129,180 @@ OVF_MIN, OVF_MAX = 0.1, 0.95
 CLICK_AMP = 1.5            # spike injected on the touched edge
 THRESH_MIN, THRESH_MAX = 0.05, 2.0
 SIGNAL_SCALE = 2.0         # top of the signal meter
-HOVER_GLOW = 0.22          # default hover pre-light strength (slider-controlled)
+HOVER_GLOW = 0.7           # default hover pre-light strength (slider-controlled)
 HOVER_COLOR = (0.30, 0.44, 0.70)  # cool tone for the hover pre-light
 # gain sliders: amplify the idle ambient and the hover response independently
 AMB_GAIN_MIN, AMB_GAIN_MAX = 0.0, 1.5
-HOV_GAIN_MIN, HOV_GAIN_MAX = 0.0, 1.0
+HOV_GAIN_MIN, HOV_GAIN_MAX = 0.0, 3.0   # hover has a strong effect on the lights
+DRONE_GAIN_MAX = 1.6       # drone volume trim (1.0 = unity)
+CHIME_GAIN_MAX = 1.6       # ring-touch chime volume trim (1.0 = unity)
+# constant always-on glow on the beads (slider-controlled). Keeps the beads lit
+# and, via the drone tie, keeps them resonating at a steady level.
+BEAD_GLOW_MAX = 0.8
+BEAD_GLOW_DEFAULT = 0.08   # "Base bead chime" slider starts at 10% of max
+# click-and-hold "charge": while a strand is held, its nodes brighten over this
+# many seconds (to full), and fade back over HOLD_DECAY once released. The charge
+# also whitens the held strand's colour toward the pure "signal" white.
+HOLD_RAMP = 2.0
+HOLD_DECAY = 0.6
+# repeated taps on the same edge build a per-edge "press energy" that whitens the
+# ripple colour toward white; each tap adds PRESS_STEP and it decays by half every
+# PRESS_HALFLIFE seconds.
+PRESS_STEP = 0.34
+PRESS_HALFLIFE = 0.8
 CAL_PROMPTS = ("", "background: keep clear, press C",
                "hover: hold hand near, press C", "touch: hold a touch, press C")
 
+# --- chord / bead-note model ---------------------------------------------
+# Every bead is one tone of a chord; when a ripple illuminates the bead it
+# sounds that tone. Beads are ordered centre -> outer = low -> high. The chord
+# *quality* is chosen from a dropdown whose options match the number of beads.
+NOTE_ROOT = 220.0  # A3; chord tones stack upward from here
+_MAJOR_SCALE = [0, 2, 4, 5, 7, 9, 11]
+CHORDS = {
+    2: [("5 (power)", [0, 7]), ("octave", [0, 12]), ("tritone", [0, 6])],
+    3: [("maj", [0, 4, 7]), ("min", [0, 3, 7]), ("sus2", [0, 2, 7]),
+        ("sus4", [0, 5, 7]), ("dim", [0, 3, 6]), ("aug", [0, 4, 8])],
+    4: [("maj7", [0, 4, 7, 11]), ("7", [0, 4, 7, 10]), ("min7", [0, 3, 7, 10]),
+        ("6", [0, 4, 7, 9]), ("m7b5", [0, 3, 6, 10]), ("dim7", [0, 3, 6, 9])],
+    5: [("maj9", [0, 4, 7, 11, 14]), ("9", [0, 4, 7, 10, 14]),
+        ("min9", [0, 3, 7, 10, 14]), ("6/9", [0, 4, 7, 9, 14]),
+        ("m9", [0, 3, 7, 10, 14])],
+    6: [("maj11", [0, 4, 7, 11, 14, 17]), ("11", [0, 4, 7, 10, 14, 17]),
+        ("min11", [0, 3, 7, 10, 14, 17])],
+    7: [("maj13", [0, 4, 7, 11, 14, 17, 21]), ("13", [0, 4, 7, 10, 14, 17, 21]),
+        ("min13", [0, 3, 7, 10, 14, 17, 21])],
+}
 
-def _bead_accumulate(ctx, sources, beads, base_color, mix, bead_gain):
-    """BFS over the enabled-only topology from the edge's seed lights.
 
-    Returns (hop, colors, boost) per LED chain index. Hops count active-node
-    steps (deactivated nodes are skipped). `colors` is the base colour blended
-    with every bead on the path from the source, so the bead tints carry onto
-    everything downstream and several beads mix together. `boost` marks beads
-    so they flare brighter.
+def _chord_options(n: int):
+    """Chord choices for `n` beads: a curated list when we have one, otherwise a
+    diatonic stack so any bead count still maps to sensible tones."""
+    if n in CHORDS:
+        return CHORDS[n]
+    if n >= 1:
+        return [("stack", [_MAJOR_SCALE[i % 7] + 12 * (i // 7) for i in range(n)])]
+    return [("(add beads)", [0])]
+
+
+def _saturate(c, k=2.2):
+    """Push an RGB colour toward a pure, vivid hue (more saturated) while
+    keeping its peak channel, by squashing the dimmer channels. `k`>1 deepens
+    the saturation. Used by funnel beads so the light they pass on is intense."""
+    c = np.asarray(c, dtype=float)
+    mx = float(c.max())
+    if mx <= 1e-6:
+        return c
+    return np.clip((c / mx) ** k * mx, 0.0, 1.0)
+
+
+def _bead_accumulate(ctx, sources, beads, base_color, mix, bead_gain, multi=False,
+                     whiten=0.0, bead_fx=None):
+    """Wavefront traversal over the enabled-only topology from the seed lights.
+
+    Returns (dist, colors, boost, reflections) per LED chain index.
+
+    `dist` is the wave's *travel distance* to each node, measured in ordinary
+    hops but warped by any speed-changing beads on the path: a fast bead
+    shortens every hop downstream of it (so the wave arrives sooner = faster),
+    a slow bead lengthens them (slower). With no speed beads this is exactly
+    the active-node hop count, matching the old behaviour. The wave always
+    travels through every bead -- nothing blocks it.
+
+    The colour reaching each node is the *bead* colour carried along the path:
+    the first bead on a path emits its own pure colour (it is not diluted by the
+    white signal), and further beads blend into the carried colour by `mix`.
+    `boost` marks beads so they flare brighter.
+
+    A `funnel` bead passes the wave on along just one outgoing strand (chosen at
+    random for this ripple) and the colour it sends on is super-saturated and
+    boosted, so a single bright beam shoots off in one direction.
+
+    `reflections` is a list of (node_index, arrival_dist) for every `bounce`
+    bead the wave reached, so the caller can launch a return ripple from it.
+
+    `whiten` (0..1) then lerps every colour toward white -- this is the "white
+    signal" intensifying as a strand is pressed repeatedly or held down.
+
+    `multi=True` treats every source as its own seed (e.g. a whole ring), rather
+    than the two ends of one edge.
     """
     n = len(ctx.positions)
     idx_of = {nid: i for i, nid in enumerate(ctx.led_node_ids)}
     adj = ctx.led_adjacency()
-    if len(sources) >= 2:
+    if len(sources) >= 2 and not multi:
         seeds = ctx.web.edge_seed_leds(sources[0], sources[1])
     else:
         seeds = set(sources)
     starts = [idx_of[s] for s in seeds if s in idx_of]
 
     colors = np.tile(np.asarray(base_color, dtype=float), (n, 1))
+    tinted = np.zeros(n, dtype=bool)   # has a bead colour reached this node yet?
     boost = np.ones(n)
     bead_idx = {idx_of[b]: np.asarray(c, dtype=float)
                 for b, c in beads.items() if b in idx_of}
+    fx = {idx_of[b]: f for b, f in (bead_fx or {}).items() if b in idx_of}
 
-    hop = np.full(n, np.inf)
+    dist = np.full(n, np.inf)
+    carry = np.ones(n)            # wave-speed multiplier inherited along the path
     parent: dict[int, int] = {}
-    order: list[int] = list(starts)
-    seen = set(starts)
-    dq = deque(starts)
+    order: list[int] = []
+    settled = np.zeros(n, dtype=bool)
+    reflections: list[tuple[int, float]] = []
+
+    # Dijkstra over fractional hop cost (1 / current speed multiplier), so a
+    # path through a speed-changing bead warps how long every onward hop takes.
+    heap: list[tuple[float, int]] = []
     for s in starts:
-        hop[s] = 0.0
-    while dq:
-        u = dq.popleft()
-        for v in adj[u]:
-            if v not in seen:
-                seen.add(v)
+        dist[s] = 0.0
+        heapq.heappush(heap, (0.0, s))
+    while heap:
+        d, u = heapq.heappop(heap)
+        if settled[u]:
+            continue
+        settled[u] = True
+        order.append(u)
+        f = fx.get(u)
+        if f and f.get("bounce"):
+            # the wave keeps going forward AND a copy heads back the way it came
+            reflections.append((u, d))
+        out_spd = carry[u] * (f["speed"] if f else 1.0)
+        step = 1.0 / max(out_spd, 1e-3)
+        targets = adj[u]
+        if f and f.get("funnel"):
+            # send the signal on along a single direction only (prefer onward,
+            # i.e. not straight back the way it came)
+            cand = [v for v in adj[u] if v != parent.get(u)] or list(adj[u])
+            targets = [random.choice(cand)] if cand else []
+        for v in targets:
+            nd = d + step
+            if nd < dist[v]:
+                dist[v] = nd
+                carry[v] = out_spd
                 parent[v] = u
-                hop[v] = hop[u] + 1.0
-                order.append(v)
-                dq.append(v)
+                heapq.heappush(heap, (nd, v))
+
     for i in order:
         p = parent.get(i)
         if p is not None:
             colors[i] = colors[p]
+            tinted[i] = tinted[p]
         if i in bead_idx:
-            colors[i] = (1.0 - mix) * colors[i] + mix * bead_idx[i]
-            boost[i] = bead_gain
-    return hop, colors, boost
+            f = fx.get(i)
+            if f and f.get("funnel"):
+                # funnel: pass on an intense, super-saturated version of its
+                # colour and flare brighter than an ordinary bead
+                colors[i] = _saturate(bead_idx[i])
+                boost[i] = bead_gain * 1.7
+            else:
+                # first bead on the path emits its pure colour; later beads blend
+                colors[i] = ((1.0 - mix) * colors[i] + mix * bead_idx[i]
+                             if tinted[i] else bead_idx[i])
+                boost[i] = bead_gain
+            tinted[i] = True
+    if whiten > 0.0:
+        colors = (1.0 - whiten) * colors + whiten * np.ones(3)
+    return dist, colors, boost, reflections
 
 
 class _DimAmbient(Ambient):
@@ -195,7 +344,7 @@ class DreamRipple(DreamSignal):
 
     def __init__(self, sources, beads, color=(0.85, 0.88, 1.0), speed=None,
                  width=None, start=0.0, half_life=1.0, metric="hops",
-                 mix=0.6, bead_gain=2.4):
+                 mix=0.6, bead_gain=2.4, multi=False, whiten=0.0, bead_fx=None):
         # the signal loses half its strength every `half_life` seconds; it is
         # considered done (and removed) after ~6 half-lives.
         self.half_life = max(float(half_life), 0.05)
@@ -203,28 +352,43 @@ class DreamRipple(DreamSignal):
         super().__init__(color, start, duration)
         self.sources = [sources] if isinstance(sources, int) else list(sources)
         self.beads = {int(k): np.asarray(v, dtype=float) for k, v in beads.items()}
+        self.bead_fx = {int(k): v for k, v in (bead_fx or {}).items()}
         self.mix = float(mix)
         self.bead_gain = float(bead_gain)
         self.metric = metric
+        self.multi = multi
+        self.whiten = float(whiten)
         if metric == "hops":
-            self.speed = 3.0 if speed is None else speed
+            self.speed = 0.7 if speed is None else speed
             self.width = 0.9 if width is None else width
         else:
-            self.speed = 150.0 if speed is None else speed
+            self.speed = 40.0 if speed is None else speed
             self.width = 55.0 if width is None else width
         self._dist = None
         self._colors = None
         self._boost = None
+        self._refl = []   # (arrival_dist, dist-from-bead) for each bounce bead
 
     def _ensure(self, ctx):
         if self._dist is not None:
             return
-        hop, colors, boost = _bead_accumulate(
-            ctx, self.sources, self.beads, self.color, self.mix, self.bead_gain)
+        hop, colors, boost, reflections = _bead_accumulate(
+            ctx, self.sources, self.beads, self.color, self.mix, self.bead_gain,
+            multi=self.multi, whiten=self.whiten, bead_fx=self.bead_fx)
         self._colors = colors
         self._boost = boost
         if self.metric == "hops":
             self._dist = hop
+            # each bounce bead duplicates the signal back the way it came: a
+            # return wave from the bead, restricted to the region *behind* it
+            # (nodes the forward wave reached no later than the bead), so it
+            # travels back toward the source rather than re-lighting downstream.
+            for node_i, arrival in reflections:
+                nid = ctx.led_node_ids[node_i]
+                rdist = ctx.led_hop_distances([nid])
+                behind = self._dist <= float(arrival) + 1e-6
+                rdist = np.where(behind, rdist, np.inf)
+                self._refl.append((float(arrival), rdist))
         else:
             gd = ctx.web.graph_distances(self.sources, hops=False)
             self._dist = np.asarray([gd.get(nid, np.inf) for nid in ctx.led_node_ids], dtype=float)
@@ -237,6 +401,14 @@ class DreamRipple(DreamSignal):
         radius = self.speed * dt
         env = _gaussian(self._dist - radius, self.width * 0.5)
         env = np.where(np.isfinite(self._dist), env, 0.0)
+        for arrival, rdist in self._refl:
+            # the return wave only begins once the forward wave reached the
+            # bounce bead (radius == arrival); from then it sweeps back outward.
+            rrad = radius - arrival
+            if rrad <= 0.0:
+                continue
+            renv = _gaussian(rdist - rrad, self.width * 0.5)
+            env = env + np.where(np.isfinite(rdist), renv, 0.0)
         amp = 0.5 ** (dt / self.half_life)  # diminishes over time
         return env * self._boost * amp
 
@@ -248,7 +420,8 @@ class DreamOverlap(DreamSignal):
     hops it covers; `falloff` sets how strongly emission drops per hop."""
 
     def __init__(self, sources, beads, color=(0.85, 0.88, 1.0), start=0.0,
-                 duration=2.5, reach=2, falloff=0.5, mix=0.6, bead_gain=2.4):
+                 duration=2.5, reach=2, falloff=0.5, mix=0.6, bead_gain=2.4,
+                 whiten=0.0):
         super().__init__(color, start, duration)
         self.sources = [sources] if isinstance(sources, int) else list(sources)
         self.beads = {int(k): np.asarray(v, dtype=float) for k, v in beads.items()}
@@ -256,6 +429,7 @@ class DreamOverlap(DreamSignal):
         self.falloff = float(falloff)
         self.mix = float(mix)
         self.bead_gain = float(bead_gain)
+        self.whiten = float(whiten)
         self._hop = None
         self._colors = None
         self._boost = None
@@ -263,8 +437,13 @@ class DreamOverlap(DreamSignal):
     def _ensure(self, ctx):
         if self._hop is not None:
             return
-        self._hop, self._colors, self._boost = _bead_accumulate(
-            ctx, self.sources, self.beads, self.color, self.mix, self.bead_gain)
+        # Area is a *static* neighbourhood, so bead speed effects don't apply:
+        # we measure plain active-node hops (no warping) and never pass bead_fx,
+        # so a slow bead can't push nodes outside `reach` and look like a block.
+        # Bead *colour* still mixes along the path (that comes from `beads`).
+        self._hop, self._colors, self._boost, _ = _bead_accumulate(
+            ctx, self.sources, self.beads, self.color, self.mix, self.bead_gain,
+            whiten=self.whiten)
 
     def weight(self, ctx, t):
         dt = t - self.start
@@ -372,7 +551,7 @@ class EdgeSignals:
 
 
 def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
-        brightness: float = 1.0, fps: int = 60) -> None:
+        brightness: float = 1.0, fps: int = 60, rings: int = 4) -> None:
     web = Web.load(config_path)
     if not web.nodes:
         print(f"No web found at {config_path}. Run the editor or generate a sample first.")
@@ -380,37 +559,53 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
 
     engine = Engine(web, blend="add", brightness=brightness)
 
-    link = None
+    # hardware link: bidirectional (LED frames out, per-ring capacitance in).
+    # With a board attached, the real rings drive the ripples/chimes/drone; the
+    # mouse still works for tuning. Without one, it's purely mouse-driven.
+    device = None
+    proc = None
     if serial_port:
-        from spiderweb.serial_link import SerialLink
-        link = SerialLink(serial_port, baud)
-        print(f"Streaming to {serial_port} @ {baud}")
+        from spiderweb.device import SerialDevice
+        try:
+            device = SerialDevice(serial_port, baud, num_rings=rings)
+            proc = RingProcessor(rings)
+            print(f"Streaming to {serial_port} @ {baud}; reading {rings} rings")
+        except Exception as e:  # noqa: BLE001
+            print(f"serial open failed ({e!r}); running mouse-only")
+            device = None
 
-    panel_rect, row_rects = ui.panel_layout(BUTTONS)
-    trail_origin = (12, panel_rect.bottom + 8)
-    trail_panel, trail_track = ui.slider_layout(trail_origin)
-    mix_origin = (12, trail_panel.bottom + 8)
-    mix_panel, mix_track = ui.slider_layout(mix_origin)
-    decay_origin = (12, mix_panel.bottom + 8)
-    decay_panel, decay_track = ui.slider_layout(decay_origin)
-    reach_origin = (12, decay_panel.bottom + 8)
-    reach_panel, reach_track = ui.slider_layout(reach_origin)
-    ovf_origin = (12, reach_panel.bottom + 8)
-    ovf_panel, ovf_track = ui.slider_layout(ovf_origin)
-    thr_origin = (12, ovf_panel.bottom + 8)
-    thr_panel, thr_track = ui.slider_layout(thr_origin)
-    amb_origin = (12, thr_panel.bottom + 8)
-    amb_panel, amb_track = ui.slider_layout(amb_origin)
-    hov_origin = (12, amb_panel.bottom + 8)
-    hov_panel, hov_track = ui.slider_layout(hov_origin)
-    meter_origin = (12, hov_panel.bottom + 8)
-    meter_h = 64
-    # interactive signal meter: a draggable bar where the user marks the bands
+    # the web sits between the two sidebars; the right sidebar starts past it
+    RIGHT_X = SIDEBAR_W + web.size[0]
+    SLW = SIDEBAR_W - 24       # left control width
+    RSW = RIGHT_W - 24         # right control width
+    SLH, GAP = 44, 6          # full-height sliders so the labels stay readable
+
+    def _slider(prev_bottom, x=12, w=SLW):
+        o = (x, prev_bottom + GAP)
+        panel, track = ui.slider_layout(o, width=w, height=SLH)
+        return o, panel, track
+
+    # ---- LEFT column: IMPULSE menu --------------------------------------
+    impulse_panel, impulse_rows = ui.panel_layout(IMPULSE_BUTTONS, width=SLW)
+    trail_origin, trail_panel, trail_track = _slider(impulse_panel.bottom)
+    decay_origin, decay_panel, decay_track = _slider(trail_panel.bottom)
+    reach_origin, reach_panel, reach_track = _slider(decay_panel.bottom)
+    ovf_origin, ovf_panel, ovf_track = _slider(reach_panel.bottom)
+    hov_origin, hov_panel, hov_track = _slider(ovf_panel.bottom)
+
+    # ---- LEFT column: SIGNAL menu (calibrate + live meter) --------------
+    # the touch/noise thresholds are set by dragging the meter handles below,
+    # so there is no separate threshold slider.
+    signal_panel, signal_rows = ui.panel_layout(
+        SIGNAL_BUTTONS, origin=(12, hov_panel.bottom + GAP), width=SLW)
+
+    meter_origin = (12, signal_panel.bottom + GAP)
+    meter_h = 70
+    meter_bottom = meter_origin[1] + meter_h
     METER_X = 12
-    METER_W = SIDEBAR_W - 24
+    METER_W = SLW
     meter_bar_y = meter_origin[1] + 24
     meter_bar_h = 14
-    # generous hit-zone so the boundary handles are easy to grab
     meter_hit = pygame.Rect(METER_X, meter_bar_y - 8, METER_W, meter_bar_h + 18)
 
     def meter_value(x: int) -> float:
@@ -419,10 +614,48 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
     def meter_x(v: float) -> int:
         return METER_X + int(min(v / SIGNAL_SCALE, 1.0) * METER_W)
 
-    status_origin = (12, meter_origin[1] + meter_h + 8)
+    # ---- LEFT column: AMBIENT menu (below the signal meter) -------------
+    ambient_panel, ambient_rows = ui.panel_layout(
+        AMBIENT_BUTTONS, origin=(12, meter_origin[1] + meter_h + GAP), width=SLW)
+    amb_origin, amb_panel, amb_track = _slider(ambient_panel.bottom)
+
+    status_origin = (12, amb_panel.bottom + GAP)
     status_h = ui.PAD * 2 + 3 * 20
-    win_w = SIDEBAR_W + web.size[0]
-    win_h = max(web.size[1], status_origin[1] + status_h + 12)
+
+    # ---- RIGHT column: SOUND menu ---------------------------------------
+    RX = RIGHT_X + 12
+    sound_panel, sound_rows = ui.panel_layout(SOUND_BUTTONS, origin=(RX, 12), width=RSW)
+    DD_H, DD_ROW = 32, 24
+    dd_rect = pygame.Rect(RX, sound_panel.bottom + GAP, RSW, DD_H)
+
+    def option_rect(oi: int) -> pygame.Rect:
+        return pygame.Rect(dd_rect.x, dd_rect.bottom + oi * DD_ROW, dd_rect.w, DD_ROW)
+
+    vol_origin, vol_panel, vol_track = _slider(dd_rect.bottom, x=RX, w=RSW)
+    drone_origin, drone_panel, drone_track = _slider(vol_panel.bottom, x=RX, w=RSW)
+    chime_origin, chime_panel, chime_track = _slider(drone_panel.bottom, x=RX, w=RSW)
+
+    # ---- RIGHT column: BEADS menu (below the sound volumes) -------------
+    beads_panel, beads_rows = ui.panel_layout(
+        BEADS_BUTTONS, origin=(RX, chime_panel.bottom + GAP), width=RSW)
+    mix_origin, mix_panel, mix_track = _slider(beads_panel.bottom, x=RX, w=RSW)
+    bp_origin, bp_panel, bp_track = _slider(mix_panel.bottom, x=RX, w=RSW)
+    sound_status_origin = (RX, bp_panel.bottom + GAP)
+
+    # bead-type legend, listing what each bead colour does to a passing ripple
+    BEAD_FX_DESC = {
+        "fast": "speeds wave up",
+        "funnel": "one way, intense colour",
+        "bounce": "bounces back",
+    }
+    LEGEND_ROW = 18
+    legend_origin = (RX, sound_status_origin[1] + status_h + GAP)
+    legend_h = LEGEND_ROW * (len(BEAD_TYPES) + 1) + 6
+
+    win_w = RIGHT_X + RIGHT_W
+    win_h = max(web.size[1],
+                status_origin[1] + status_h + 12,
+                legend_origin[1] + legend_h + 12)
 
     pygame.init()
     screen = pygame.display.set_mode((win_w, win_h))
@@ -441,27 +674,57 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
     beads: dict[int, int] = {}
 
     def shuffle_beads() -> None:
-        """Randomly choose how many nodes are beads and which, with random colours."""
+        """Randomly scatter 4-8 beads of mixed types (repeats allowed, so the
+        web can hold several boosters / mirrors / walls at once)."""
         beads.clear()
         if not led_ids:
             return
-        count = random.randint(max(2, len(led_ids) // 8), max(3, len(led_ids) // 2))
-        for nid in random.sample(led_ids, min(count, len(led_ids))):
-            beads[nid] = random.randrange(len(BEAD_COLORS))
+        lo = min(4, len(led_ids))
+        hi = min(8, len(led_ids))
+        count = random.randint(lo, max(lo, hi))
+        nodes = random.sample(led_ids, count)
+        for nid in nodes:
+            beads[nid] = random.randrange(len(BEAD_TYPES))
 
     shuffle_beads()  # start with a random arrangement
 
-    state = {"tool": "ripple_hops", "color_idx": 0, "ambient_idx": 1,
-             "trail": 1.5, "mix": 0.6, "decay": 1.2, "overlap_hops": 2,
+    # responsive soundscape (independent of LEDs -- consumes signal + touches)
+    sound = Soundscape()
+    sound.start()
+
+    state = {"tool": "ripple_hops", "color_idx": 0, "ambient_idx": 0,
+             "trail": 3.0, "mix": 0.6, "decay": 2.5, "overlap_hops": 1,
              "overlap_falloff": 0.5, "threshold": 0.85, "noise_max": 0.30,
              "ambient_gain": AMBIENT_DIM, "hover_gain": HOVER_GLOW,
+             "bead_level": BEAD_GLOW_DEFAULT,
+             "sound_on": sound.ok, "volume": 0.7, "_last_trickle": 0.0,
+             "drone_gain": 1.0, "chime_gain": 0.35,
              "drag_target": None, "touch_edge": None, "ambient": None,
-             "bead_glow": None, "cal_step": 0,
+             "hold_charge": 0.0, "hold_edge": None, "press_energy": {},
+             "bead_glow": None, "cal_step": 0, "chord_idx": 0, "chord_open": False,
              "cal": {"bg": 0.0, "hover": 0.0, "click": 0.0}, "run": True}
 
-    # per-edge capacitance signal model + index lookup (strand tuple -> index)
+    # web centre, so beads (and ring chimes) can be ordered by radius
+    _xy = np.array([[n.x, n.y] for n in web.nodes], dtype=float)
+    _center = _xy.mean(axis=0) if len(_xy) else np.zeros(2)
+
+    # distance of each node from the web centre, so beads can be ordered
+    # centre -> outer (low -> high chord tone)
+    node_r = {n.id: float(np.linalg.norm(np.array([n.x, n.y]) - _center))
+              for n in web.nodes}
+
+    def bead_notes(intervals) -> dict[int, float]:
+        """Map each bead to a chord-tone frequency, centre bead = lowest."""
+        order = sorted(beads.keys(), key=lambda nid: node_r.get(nid, 0.0))
+        L = max(len(intervals), 1)
+        notes: dict[int, float] = {}
+        for i, nid in enumerate(order):
+            semi = intervals[i % L] + 12 * (i // L)
+            notes[nid] = NOTE_ROOT * (2.0 ** (semi / 12.0))
+        return notes
+
+    # per-edge capacitance signal model
     signals = EdgeSignals(web)
-    edge_index = {e: i for i, e in enumerate(signals.edges)}
     # which edges touch each LED node, so a rising signal pre-lights its nodes
     led_edges: list[list[int]] = [[] for _ in led_ids]
     led_row = {nid: i for i, nid in enumerate(led_ids)}
@@ -470,8 +733,83 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
             if nid in led_row:
                 led_edges[led_row[nid]].append(i)
 
+    # ring vs axis edges: only the *ring* (circumferential) strands are
+    # interactive; the radial axis strands do nothing. An edge is a ring edge
+    # when both ends sit on the same concentric ring.
+    _ring_of, _ = web.node_rings()
+    npos = {n.id: (n.x, n.y) for n in web.nodes}
+    ring_edge_set = {i for i, (a, b) in enumerate(signals.edges)
+                     if _ring_of.get(a) == _ring_of.get(b)}
+
+    def pick_edge(mx: float, my: float, max_dist: float = EDGE_PICK_DIST):
+        """Nearest *ring* edge index to (mx, my); axis edges are ignored."""
+        best, bestd = None, float("inf")
+        for i in ring_edge_set:
+            a, b = signals.edges[i]
+            d = _segment_distance(mx, my, npos[a][0], npos[a][1],
+                                  npos[b][0], npos[b][1])
+            if d < bestd:
+                best, bestd = i, d
+        return best if bestd <= max_dist else None
+
+    # ring edges, innermost -> outermost, map to chord degrees 0,1,2,... so a
+    # ring chime plays the 1st / 3rd / 5th of the current chord (and matches the
+    # bead drone, which uses the same intervals).
+    _ring_levels = sorted({_ring_of.get(signals.edges[i][0]) for i in ring_edge_set})
+    ring_level_deg = {lvl: i for i, lvl in enumerate(_ring_levels)}
+
+    def degree_freq(deg: int, intervals) -> float:
+        L = max(len(intervals), 1)
+        semi = intervals[deg % L] + 12 * (deg // L)
+        return NOTE_ROOT * (2.0 ** (semi / 12.0))
+
+    def edge_chord_freq(i: int, intervals) -> float:
+        lvl = _ring_of.get(signals.edges[i][0], 0)
+        return degree_freq(ring_level_deg.get(lvl, 0), intervals)
+
+    def edge_pan(i: int) -> float:
+        """Stereo pan (0..1) of an edge from its midpoint's screen x."""
+        a, b = signals.edges[i]
+        x = 0.5 * (npos[a][0] + npos[b][0])
+        return min(max(x / max(web.size[0], 1), 0.0), 1.0)
+
+    # map each LED node to a physical *sensor ring* index (0 = centre/inner),
+    # matching the device's ring order; and the LED nodes that belong to each.
+    def _sensor_of(nid: int) -> int:
+        lvl = _ring_of.get(nid, 0) or 0
+        return max(0, min(lvl - 1, rings - 1)) if lvl else 0
+
+    led_sensor = np.array([_sensor_of(nid) for nid in led_ids], dtype=int) \
+        if led_ids else np.zeros(0, dtype=int)
+    sensor_nodes: dict[int, list[int]] = {r: [] for r in range(rings)}
+    for nid in led_ids:
+        sensor_nodes[_sensor_of(nid)].append(nid)
+
+    def ring_pan(r: int) -> float:
+        """Stereo pan (0..1) of a sensor ring from the mean screen x of its nodes."""
+        nodes = sensor_nodes.get(r, [])
+        if not nodes:
+            return 0.5
+        x = sum(npos[n][0] for n in nodes) / len(nodes)
+        return min(max(x / max(web.size[0], 1), 0.0), 1.0)
+
+    def fire_ring(r: int, t: float, color) -> None:
+        """A physical ring touch: ripple outward from every LED on that ring."""
+        nodes = sensor_nodes.get(r, [])
+        if not nodes:
+            return
+        metric = "hops"
+        engine.add(DreamRipple(nodes, bead_rgb(), color=color, start=t,
+                               metric=metric, mix=state["mix"],
+                               half_life=state["decay"], multi=True,
+                               bead_fx=bead_fx()))
+
     def bead_rgb() -> dict[int, tuple]:
         return {nid: BEAD_COLORS[i] for nid, i in beads.items()}
+
+    def bead_fx() -> dict[int, dict]:
+        """Per-bead physical effect on the ripple (speed / block / reflect)."""
+        return {nid: BEAD_TYPES[i] for nid, i in beads.items()}
 
     def refresh_beads() -> None:
         if state["bead_glow"] is not None and state["bead_glow"] in engine.events:
@@ -495,20 +833,27 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
     set_ambient()
 
     def fire_edge(i: int, t: float, color) -> None:
-        """Spawn the current touch-tool's effect from edge index `i`."""
+        """Spawn the current touch-tool's effect from edge index `i`.
+
+        Each tap charges this edge's "press energy"; the ripple is dyed toward
+        white in proportion to that energy, so a single tap shows pure bead
+        colour and repeated taps intensify the signal toward white."""
         if not (0 <= i < len(signals.edges)):
             return
+        whiten = min(1.0, state["press_energy"].get(i, 0.0))
+        state["press_energy"][i] = state["press_energy"].get(i, 0.0) + PRESS_STEP
         edge = list(signals.edges[i])
         tool = state["tool"]
         if tool == "overlap":
             engine.add(DreamOverlap(edge, bead_rgb(), color=color, start=t,
                                     reach=state["overlap_hops"],
-                                    falloff=state["overlap_falloff"], mix=state["mix"]))
+                                    falloff=state["overlap_falloff"],
+                                    mix=state["mix"], whiten=whiten))
         else:
-            metric = "distance" if tool == "ripple" else "hops"
             engine.add(DreamRipple(edge, bead_rgb(), color=color, start=t,
-                                   metric=metric, mix=state["mix"],
-                                   half_life=state["decay"]))
+                                   metric="hops", mix=state["mix"],
+                                   half_life=state["decay"], whiten=whiten,
+                                   bead_fx=bead_fx()))
 
     def activate(action: str) -> None:
         if action.startswith("tool:"):
@@ -516,6 +861,9 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
         elif action == "act:color":
             state["color_idx"] = (state["color_idx"] + 1) % len(PALETTE)
         elif action == "act:cal":
+            # the same C presses calibrate the live device rings in lockstep
+            if proc is not None:
+                proc.calibrate_step()
             # step through: arm -> capture background -> hover -> touch -> set thr
             step = state["cal_step"]
             cur = float(signals.signal.max()) if len(signals.signal) else 0.0
@@ -539,6 +887,8 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
                 state["threshold"] = max(thr, nz + 0.03)
                 state["noise_max"] = min(nz, state["threshold"] - 0.03)
                 state["cal_step"] = 0
+        elif action == "act:sound":
+            state["sound_on"] = (not state["sound_on"]) and sound.ok
         elif action == "act:clear":
             engine.clear_all()
             refresh_beads()
@@ -565,16 +915,22 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
                 activate(KEYMAP[ev.key])
             elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                 if ev.pos[0] < SIDEBAR_W:
-                    hit = next((i for i, r in enumerate(row_rects) if r.collidepoint(ev.pos)), None)
+                    # ---- LEFT column: IMPULSE + AMBIENT menus ----
+                    hit = next((i for i, r in enumerate(impulse_rows)
+                                if r.collidepoint(ev.pos)), None)
+                    srow = next((i for i, r in enumerate(signal_rows)
+                                 if r.collidepoint(ev.pos)), None)
+                    arow = next((i for i, r in enumerate(ambient_rows)
+                                 if r.collidepoint(ev.pos)), None)
                     if hit is not None:
-                        activate(BUTTONS[hit][2])
+                        activate(IMPULSE_BUTTONS[hit][2])
+                    elif srow is not None:
+                        activate(SIGNAL_BUTTONS[srow][2])
+                    elif arow is not None:
+                        activate(AMBIENT_BUTTONS[arow][2])
                     elif trail_panel.collidepoint(ev.pos):
                         state["drag_target"] = "trail"
                         state["trail"] = ui.value_from_x(trail_track, ev.pos[0]) * TRAIL_MAX
-                    elif mix_panel.collidepoint(ev.pos):
-                        state["drag_target"] = "mix"
-                        state["mix"] = MIX_MIN + ui.value_from_x(
-                            mix_track, ev.pos[0]) * (MIX_MAX - MIX_MIN)
                     elif decay_panel.collidepoint(ev.pos):
                         state["drag_target"] = "decay"
                         state["decay"] = DECAY_MIN + ui.value_from_x(
@@ -587,18 +943,14 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
                         state["drag_target"] = "ovf"
                         state["overlap_falloff"] = OVF_MIN + ui.value_from_x(
                             ovf_track, ev.pos[0]) * (OVF_MAX - OVF_MIN)
-                    elif thr_panel.collidepoint(ev.pos):
-                        state["drag_target"] = "thr"
-                        state["threshold"] = THRESH_MIN + ui.value_from_x(
-                            thr_track, ev.pos[0]) * (THRESH_MAX - THRESH_MIN)
-                    elif amb_panel.collidepoint(ev.pos):
-                        state["drag_target"] = "amb"
-                        state["ambient_gain"] = AMB_GAIN_MIN + ui.value_from_x(
-                            amb_track, ev.pos[0]) * (AMB_GAIN_MAX - AMB_GAIN_MIN)
                     elif hov_panel.collidepoint(ev.pos):
                         state["drag_target"] = "hov"
                         state["hover_gain"] = HOV_GAIN_MIN + ui.value_from_x(
                             hov_track, ev.pos[0]) * (HOV_GAIN_MAX - HOV_GAIN_MIN)
+                    elif amb_panel.collidepoint(ev.pos):
+                        state["drag_target"] = "amb"
+                        state["ambient_gain"] = AMB_GAIN_MIN + ui.value_from_x(
+                            amb_track, ev.pos[0]) * (AMB_GAIN_MAX - AMB_GAIN_MIN)
                     elif meter_hit.collidepoint(ev.pos):
                         # grab whichever band boundary (noise / touch) is nearer
                         dn = abs(ev.pos[0] - meter_x(state["noise_max"]))
@@ -610,21 +962,60 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
                             state["noise_max"] = min(v, state["threshold"] - 0.03)
                         else:
                             state["threshold"] = max(v, state["noise_max"] + 0.03)
+                elif ev.pos[0] >= RIGHT_X:
+                    # ---- RIGHT column: SOUND + BEADS menus ----
+                    if dd_rect.collidepoint(ev.pos):
+                        state["chord_open"] = not state["chord_open"]
+                    elif state["chord_open"]:
+                        _opts = _chord_options(len(beads))
+                        sel = next((oi for oi in range(len(_opts))
+                                    if option_rect(oi).collidepoint(ev.pos)), None)
+                        if sel is not None:
+                            state["chord_idx"] = sel
+                        state["chord_open"] = False
+                    else:
+                        shit = next((i for i, r in enumerate(sound_rows)
+                                     if r.collidepoint(ev.pos)), None)
+                        bhit = next((i for i, r in enumerate(beads_rows)
+                                     if r.collidepoint(ev.pos)), None)
+                        if shit is not None:
+                            activate(SOUND_BUTTONS[shit][2])
+                        elif bhit is not None:
+                            activate(BEADS_BUTTONS[bhit][2])
+                        elif vol_panel.collidepoint(ev.pos):
+                            state["drag_target"] = "vol"
+                            state["volume"] = ui.value_from_x(vol_track, ev.pos[0])
+                        elif drone_panel.collidepoint(ev.pos):
+                            state["drag_target"] = "drone"
+                            state["drone_gain"] = ui.value_from_x(
+                                drone_track, ev.pos[0]) * DRONE_GAIN_MAX
+                        elif chime_panel.collidepoint(ev.pos):
+                            state["drag_target"] = "chime"
+                            state["chime_gain"] = ui.value_from_x(
+                                chime_track, ev.pos[0]) * CHIME_GAIN_MAX
+                        elif mix_panel.collidepoint(ev.pos):
+                            state["drag_target"] = "mix"
+                            state["mix"] = MIX_MIN + ui.value_from_x(
+                                mix_track, ev.pos[0]) * (MIX_MAX - MIX_MIN)
+                        elif bp_panel.collidepoint(ev.pos):
+                            state["drag_target"] = "bp"
+                            state["bead_level"] = ui.value_from_x(
+                                bp_track, ev.pos[0]) * BEAD_GLOW_MAX
                 else:
                     mx, my = ev.pos[0] - SIDEBAR_W, ev.pos[1]
                     tool = state["tool"]
-                    if tool in ("ripple", "ripple_hops", "overlap"):
+                    if tool in ("ripple_hops", "overlap"):
                         # a press doesn't fire directly -- it injects a touch
-                        # spike on the nearest edge; the threshold decides.
-                        edge = web.nearest_edge(mx, my, max_dist=EDGE_PICK_DIST)
-                        if edge is not None and edge in edge_index:
-                            state["touch_edge"] = edge_index[edge]
+                        # spike on the nearest ring edge; the threshold decides.
+                        idx = pick_edge(mx, my)
+                        if idx is not None:
+                            state["touch_edge"] = idx
                     elif tool == "bead":
                         n = web.nearest_node(mx, my, max_dist=NODE_PICK_DIST, led_only=True)
                         if n is not None:
                             cur = beads.get(n.id, -1)
                             nxt = cur + 1
-                            if nxt >= len(BEAD_COLORS):
+                            if nxt >= len(BEAD_TYPES):
                                 beads.pop(n.id, None)
                             else:
                                 beads[n.id] = nxt
@@ -644,15 +1035,23 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
                 elif state["drag_target"] == "ovf":
                     state["overlap_falloff"] = OVF_MIN + ui.value_from_x(
                         ovf_track, ev.pos[0]) * (OVF_MAX - OVF_MIN)
-                elif state["drag_target"] == "thr":
-                    state["threshold"] = THRESH_MIN + ui.value_from_x(
-                        thr_track, ev.pos[0]) * (THRESH_MAX - THRESH_MIN)
                 elif state["drag_target"] == "amb":
                     state["ambient_gain"] = AMB_GAIN_MIN + ui.value_from_x(
                         amb_track, ev.pos[0]) * (AMB_GAIN_MAX - AMB_GAIN_MIN)
                 elif state["drag_target"] == "hov":
                     state["hover_gain"] = HOV_GAIN_MIN + ui.value_from_x(
                         hov_track, ev.pos[0]) * (HOV_GAIN_MAX - HOV_GAIN_MIN)
+                elif state["drag_target"] == "bp":
+                    state["bead_level"] = ui.value_from_x(
+                        bp_track, ev.pos[0]) * BEAD_GLOW_MAX
+                elif state["drag_target"] == "vol":
+                    state["volume"] = ui.value_from_x(vol_track, ev.pos[0])
+                elif state["drag_target"] == "drone":
+                    state["drone_gain"] = ui.value_from_x(
+                        drone_track, ev.pos[0]) * DRONE_GAIN_MAX
+                elif state["drag_target"] == "chime":
+                    state["chime_gain"] = ui.value_from_x(
+                        chime_track, ev.pos[0]) * CHIME_GAIN_MAX
                 elif state["drag_target"] == "m_noise":
                     state["noise_max"] = min(meter_value(ev.pos[0]),
                                              state["threshold"] - 0.03)
@@ -661,29 +1060,94 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
                                              state["noise_max"] + 0.03)
             elif ev.type == pygame.MOUSEMOTION and state["touch_edge"] is not None:
                 # drag the touch across the web (hand sliding over the strands)
-                if ev.pos[0] >= SIDEBAR_W:
-                    edge = web.nearest_edge(ev.pos[0] - SIDEBAR_W, ev.pos[1],
-                                            max_dist=EDGE_PICK_DIST)
-                    if edge is not None and edge in edge_index:
-                        state["touch_edge"] = edge_index[edge]
+                if SIDEBAR_W <= ev.pos[0] < RIGHT_X:
+                    idx = pick_edge(ev.pos[0] - SIDEBAR_W, ev.pos[1])
+                    if idx is not None:
+                        state["touch_edge"] = idx
             elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
                 state["drag_target"] = None
                 state["touch_edge"] = None
+
+        # resolve the active chord and each bead's note for this frame
+        opts = _chord_options(len(beads))
+        state["chord_idx"] %= len(opts)
+        chord_name, intervals = opts[state["chord_idx"]]
+        notes_map = bead_notes(intervals)
+        if sound.ok:
+            sound.set_chord(list(notes_map.values()))
 
         # keep the ambient brightness in sync with its gain slider
         if state["ambient"] is not None:
             state["ambient"].dim = state["ambient_gain"]
 
+        # constant always-on bead glow: the slider sets a steady level (no
+        # pulsing), keeping the beads lit and the drone resonating evenly.
+        if state["bead_glow"] is not None:
+            state["bead_glow"].level = state["bead_level"]
+            state["bead_glow"].pulse = 0.0
+
+        # ---- click-and-hold charge: held strand's nodes brighten over time --
+        hold_dt = clock.get_time() / 1000.0
+        # decay each edge's repeated-press energy toward zero
+        if state["press_energy"] and hold_dt > 0.0:
+            fade = 0.5 ** (hold_dt / PRESS_HALFLIFE)
+            state["press_energy"] = {k: v * fade for k, v in state["press_energy"].items()
+                                     if v * fade > 0.01}
+        held = state["touch_edge"]
+        if held is not None and int(held) in ring_edge_set:
+            state["hold_edge"] = int(held)
+            state["hold_charge"] = min(1.0, state["hold_charge"] + hold_dt / HOLD_RAMP)
+        else:
+            state["hold_charge"] = max(0.0, state["hold_charge"] - hold_dt / HOLD_DECAY)
+            if state["hold_charge"] <= 0.0:
+                state["hold_edge"] = None
+
         # ---- update the per-edge capacitance signal & threshold trigger ----
         if state["touch_edge"] is not None:
             signals.inject(state["touch_edge"], CLICK_AMP)
         mxh, myh = pygame.mouse.get_pos()
-        hand = (mxh - SIDEBAR_W, myh) if mxh >= SIDEBAR_W else None
+        hand = (mxh - SIDEBAR_W, myh) if SIDEBAR_W <= mxh < RIGHT_X else None
         signals.update(t, hand)
         rising = signals.crossings(state["threshold"])
-        if state["tool"] in ("ripple", "ripple_hops", "overlap"):
+        if state["tool"] in ("ripple_hops", "overlap"):
             for i in rising:
-                fire_edge(int(i), t, color)
+                if int(i) in ring_edge_set:
+                    fire_edge(int(i), t, color)
+
+        # ---- drive the soundscape from the same signal (no LED knowledge) ----
+        if sound.ok:
+            maxsig = float(signals.signal.max()) if len(signals.signal) else 0.0
+            span = max(state["threshold"] - state["noise_max"], 1e-3)
+            inten = min(max((maxsig - state["noise_max"]) / span, 0.0), 1.0)
+            sound.set_intensity(inten)
+            sound.set_volume(state["volume"] if state["sound_on"] else 0.0)
+            sound.set_drone_gain(state["drone_gain"])
+            sound.set_chime_gain(state["chime_gain"])
+            if state["sound_on"]:
+                # touching a ring edge rings its chime (outer ring = higher).
+                # This is separate from the bead chord drone below. The chime is
+                # panned to the edge's own position on screen.
+                for i in rising:
+                    ii = int(i)
+                    if ii in ring_edge_set:
+                        vel = 0.5 + 0.5 * min(
+                            float(signals.signal[ii]) / max(state["threshold"], 1e-3), 1.0)
+                        sound.trigger_note(edge_chord_freq(ii, intervals), velocity=vel,
+                                           pan=edge_pan(ii))
+
+        # ---- live device: the real per-ring capacitance drives the rings ----
+        dev_inten = None
+        if device is not None and proc is not None:
+            ring_rising = proc.update(device.latest_rings())
+            for r in ring_rising:
+                fire_ring(int(r), t, color)
+                if sound.ok and state["sound_on"]:
+                    sound.trigger_note(degree_freq(int(r), intervals),
+                                       velocity=0.55 + 0.45 * proc.global_intensity,
+                                       pan=ring_pan(int(r)))
+            dev_inten = proc.intensity
+            if sound.ok:
+                sound.set_intensity(max(inten, proc.global_intensity))
 
         # ---- composite: ripples average their colours where they meet
         # (signals combining), then the bead glow / ambient are added under. ----
@@ -709,10 +1173,38 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
             span = max(state["threshold"] - state["noise_max"], 1e-3)
             hover_frac = np.clip((led_sig - state["noise_max"]) / span, 0.0, 1.0)
             base += (hover_frac * state["hover_gain"])[:, None] * np.array(HOVER_COLOR)[None, :]
+        # device hover: a hand approaching a real ring warms that ring's LEDs.
+        if dev_inten is not None and len(led_sensor):
+            dev_frac = np.clip(dev_inten[led_sensor], 0.0, 1.0)
+            base += (dev_frac * state["hover_gain"])[:, None] * np.array(HOVER_COLOR)[None, :]
+        # click-and-hold charge: the held strand's seed nodes glow brighter the
+        # longer the button is held, then fade back when released. The glow starts
+        # in each node's actual colour (its bead colour, else the signal colour)
+        # and intensifies toward white as the charge builds.
+        if state["hold_charge"] > 0.0 and state["hold_edge"] is not None:
+            a, b = signals.edges[state["hold_edge"]]
+            hc = state["hold_charge"]
+            sig = np.array(color, dtype=float)
+            for s in web.edge_seed_leds(a, b):
+                if s not in led_row:
+                    continue
+                actual = np.array(BEAD_COLORS[beads[s]], dtype=float) if s in beads else sig
+                base[led_row[s]] += hc * ((1.0 - hc) * actual + hc * np.ones(3))
 
         avg = num / np.maximum(den, 1e-6)[:, None]   # averaged hue
         strength = np.clip(den, 0.0, 1.0)            # combined ripple strength
         rgb = np.clip(base + avg * strength[:, None], 0.0, 1.0)
+
+        # the bead chord drone resonates directly with the *light on the beads*:
+        # the constant bead glow holds a steady resonance, and any ripple
+        # washing over a bead swells the drone with it.
+        if sound.ok:
+            bidx = [led_row[nid] for nid in beads if nid in led_row]
+            if bidx:
+                bead_light = float(np.clip(rgb[bidx].max(axis=1).mean() * 1.3, 0.0, 1.0))
+            else:
+                bead_light = float(np.clip(strength.mean() * 3.0, 0.0, 1.0))
+            sound.set_chord_level(bead_light if state["sound_on"] else 0.0)
 
         trail = state["trail"]
         if trail > 0.05:
@@ -734,11 +1226,13 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
 
         tool = state["tool"]
         mxy = pygame.mouse.get_pos()
-        if mxy[0] >= SIDEBAR_W:
-            if tool in ("ripple", "ripple_hops", "overlap"):
-                e = web.nearest_edge(mxy[0] - SIDEBAR_W, mxy[1], max_dist=EDGE_PICK_DIST)
-                if e is not None and e[0] in pos and e[1] in pos:
-                    pygame.draw.line(screen, EDGE_HL, pos[e[0]], pos[e[1]], 3)
+        if SIDEBAR_W <= mxy[0] < RIGHT_X:
+            if tool in ("ripple_hops", "overlap"):
+                idx = pick_edge(mxy[0] - SIDEBAR_W, mxy[1])
+                if idx is not None:
+                    a, b = signals.edges[idx]
+                    if a in pos and b in pos:
+                        pygame.draw.line(screen, EDGE_HL, pos[a], pos[b], 3)
             elif tool == "bead":
                 n = web.nearest_node(mxy[0] - SIDEBAR_W, mxy[1], max_dist=NODE_PICK_DIST, led_only=True)
                 if n is not None:
@@ -756,47 +1250,49 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
                 ring = tuple(int(v * 255) for v in BEAD_COLORS[ci])
                 pygame.draw.circle(screen, ring, pos[nid], 7, 2)
 
+        # two sidebars flanking the web: lights on the left, sound on the right
         pygame.draw.rect(screen, SIDEBAR_BG, (0, 0, SIDEBAR_W, win_h))
+        pygame.draw.rect(screen, SIDEBAR_BG, (RIGHT_X, 0, RIGHT_W, win_h))
         pygame.draw.line(screen, DIVIDER, (SIDEBAR_W, 0), (SIDEBAR_W, win_h), 1)
-        ambient_mode = AMBIENT_MODES[state["ambient_idx"]]
-        rows = []
-        for key, label, action in BUTTONS:
-            active = False
-            if action == f"tool:{state['tool']}":
-                active = True
-            elif action == "act:ambient":
-                label = f"Ambient: {ambient_mode}"
-                active = ambient_mode != "off"
-            elif action == "act:cal":
-                if state["cal_step"]:
-                    label = f"Calibrate {state['cal_step']}/3"
-                active = state["cal_step"] != 0
-            rows.append((key, label, active))
+        pygame.draw.line(screen, DIVIDER, (RIGHT_X, 0), (RIGHT_X, win_h), 1)
+        mouse_pos = pygame.mouse.get_pos()
+
+        # ---- LEFT column: IMPULSE menu (one card behind the whole section) ----
+        ui.draw_card(screen, pygame.Rect(impulse_panel.x, impulse_panel.y, SLW,
+                                         hov_panel.bottom - impulse_panel.y))
+        irows = [(key, label, action == f"tool:{state['tool']}")
+                 for key, label, action in IMPULSE_BUTTONS]
         click_hint = "click a node" if state["tool"] == "bead" else "click an edge"
-        ui.draw_panel(screen, font, title_font, f"DREAM-CATCHER \u2014 {click_hint}", rows,
-                      mouse_pos=pygame.mouse.get_pos())
+        ui.draw_panel(screen, font, title_font, f"IMPULSE \u2014 {click_hint}", irows,
+                      mouse_pos=mouse_pos, width=SLW, fill=False)
         sw = pygame.Surface((28, 16))
         sw.fill(tuple(int(v * 255) for v in color))
-        screen.blit(sw, (252, 22))
+        screen.blit(sw, (SLW - 44, 22))
+
         trail_label = "Trail: off" if state["trail"] <= 0.05 else f"Trail: {state['trail']:.1f}s"
-        ui.draw_slider(screen, font, trail_label, state["trail"] / TRAIL_MAX, trail_origin)
-        ui.draw_slider(screen, font, f"Bead colour mix: {int(state['mix'] * 100)}%",
-                       (state["mix"] - MIX_MIN) / (MIX_MAX - MIX_MIN), mix_origin)
+        ui.draw_slider(screen, font, trail_label, state["trail"] / TRAIL_MAX, trail_origin,
+                       width=SLW, height=SLH, fill=False)
         ui.draw_slider(screen, font, f"Signal decay: {state['decay']:.1f}s half-life",
-                       (state["decay"] - DECAY_MIN) / (DECAY_MAX - DECAY_MIN), decay_origin)
+                       (state["decay"] - DECAY_MIN) / (DECAY_MAX - DECAY_MIN), decay_origin,
+                       width=SLW, height=SLH, fill=False)
         oh = state["overlap_hops"]
-        ui.draw_slider(screen, font, f"Overlap reach: {oh} hop" + ("s" if oh != 1 else ""),
-                       (oh - 1) / (OV_MAX_HOPS - 1), reach_origin)
-        ui.draw_slider(screen, font, f"Overlap emission: {int(state['overlap_falloff'] * 100)}%/hop",
-                       (state["overlap_falloff"] - OVF_MIN) / (OVF_MAX - OVF_MIN), ovf_origin)
-        ui.draw_slider(screen, font, f"Click threshold: {state['threshold']:.2f}",
-                       (state["threshold"] - THRESH_MIN) / (THRESH_MAX - THRESH_MIN), thr_origin)
-        ui.draw_slider(screen, font, f"Ambient gain: {int(state['ambient_gain'] * 100)}%",
-                       (state["ambient_gain"] - AMB_GAIN_MIN) / (AMB_GAIN_MAX - AMB_GAIN_MIN),
-                       amb_origin)
+        ui.draw_slider(screen, font, f"Area reach: {oh} hop" + ("s" if oh != 1 else ""),
+                       (oh - 1) / (OV_MAX_HOPS - 1), reach_origin, width=SLW, height=SLH, fill=False)
+        ui.draw_slider(screen, font, f"Area emission: {int(state['overlap_falloff'] * 100)}%/hop",
+                       (state["overlap_falloff"] - OVF_MIN) / (OVF_MAX - OVF_MIN), ovf_origin,
+                       width=SLW, height=SLH, fill=False)
         ui.draw_slider(screen, font, f"Hover gain: {int(state['hover_gain'] * 100)}%",
                        (state["hover_gain"] - HOV_GAIN_MIN) / (HOV_GAIN_MAX - HOV_GAIN_MIN),
-                       hov_origin)
+                       hov_origin, width=SLW, height=SLH, fill=False)
+
+        # ---- LEFT column: SIGNAL menu (calibrate + live meter, one card) ----
+        ui.draw_card(screen, pygame.Rect(signal_panel.x, signal_panel.y, SLW,
+                                         meter_bottom - signal_panel.y))
+        cal_label = (f"Calibrate {state['cal_step']}/3" if state["cal_step"]
+                     else "Calibrate signal")
+        ui.draw_panel(screen, font, title_font, "SIGNAL",
+                      [("C", cal_label, state["cal_step"] != 0)],
+                      mouse_pos=mouse_pos, origin=signal_panel.topleft, width=SLW, fill=False)
 
         # ---- live signal meter: three draggable bands (noise / hover / touch) ----
         cur = float(signals.signal.max()) if len(signals.signal) else 0.0
@@ -831,30 +1327,122 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
         screen.blit(font.render("touch", True, (240, 130, 120)),
                     (min(thr_x + 4, METER_X + METER_W - 32), lbl_y))
 
+        # ---- LEFT column: AMBIENT menu (one card) ----
+        ui.draw_card(screen, pygame.Rect(ambient_panel.x, ambient_panel.y, SLW,
+                                         amb_panel.bottom - ambient_panel.y))
+        ambient_mode = AMBIENT_MODES[state["ambient_idx"]]
+        ui.draw_panel(screen, font, title_font, "AMBIENT",
+                      [("A", f"Ambient: {ambient_mode}", ambient_mode != "off")],
+                      mouse_pos=mouse_pos, origin=ambient_panel.topleft, width=SLW, fill=False)
+        ui.draw_slider(screen, font, f"Ambient gain: {int(state['ambient_gain'] * 100)}%",
+                       (state["ambient_gain"] - AMB_GAIN_MIN) / (AMB_GAIN_MAX - AMB_GAIN_MIN),
+                       amb_origin, width=SLW, height=SLH, fill=False)
+
         cal_line = (f"calibrate: {CAL_PROMPTS[state['cal_step']]}"
                     if state["cal_step"] else
                     f"noise<{state['noise_max']:.2f}  hover  touch>{state['threshold']:.2f}")
+        if device is not None and proc is not None:
+            vals = " ".join(f"{v:.0f}" for v in proc.value)
+            serial_line = (f"device {serial_port}  rings[{vals}]"
+                           f"  ring{proc.active_ring} {proc.global_intensity:.2f}")
+        else:
+            serial_line = "device: off (mouse only)"
         ui.draw_status(
             screen, font,
             [
                 cal_line,
                 f"signals {sum(1 for e in engine.events if isinstance(e, DreamSignal))}"
                 f"   beads {len(beads)}   LEDs {len(leds)}",
-                f"serial: {serial_port}" if link else "serial: off",
+                serial_line,
             ],
-            origin=status_origin,
+            origin=status_origin, width=SLW,
         )
+
+        # ---- RIGHT column: SOUND menu (one card behind the whole section) ----
+        ui.draw_card(screen, pygame.Rect(sound_panel.x, sound_panel.y, RSW,
+                                         chime_panel.bottom - sound_panel.y))
+        sound_lbl = (f"Sound: {'on' if state['sound_on'] else 'off'}"
+                     if sound.ok else "Sound: (no device)")
+        ui.draw_panel(screen, font, title_font, "SOUND",
+                      [("S", sound_lbl, state["sound_on"])],
+                      mouse_pos=mouse_pos, origin=(RX, 12), width=RSW, fill=False)
+
+        # chord dropdown (closed box; the open list overlays last)
+        pygame.draw.rect(screen, (22, 28, 44), dd_rect, border_radius=5)
+        pygame.draw.rect(screen, (64, 78, 110), dd_rect, 1, border_radius=5)
+        screen.blit(font.render(f"Chord: {chord_name}  ({len(beads)} beads)", True, TEXT),
+                    (dd_rect.x + 8, dd_rect.y + 8))
+        pygame.draw.polygon(screen, (150, 165, 195), [
+            (dd_rect.right - 18, dd_rect.y + 13), (dd_rect.right - 8, dd_rect.y + 13),
+            (dd_rect.right - 13, dd_rect.y + 19)])
+
+        vol_lbl = (f"Master volume: {int(state['volume'] * 100)}%"
+                   if state["sound_on"] else "Master volume: (muted)")
+        ui.draw_slider(screen, font, vol_lbl, state["volume"], vol_origin,
+                       width=RSW, height=SLH, fill=False)
+        ui.draw_slider(screen, font, f"Drone volume: {int(state['drone_gain'] * 100)}%",
+                       state["drone_gain"] / DRONE_GAIN_MAX, drone_origin,
+                       width=RSW, height=SLH, fill=False)
+        ui.draw_slider(screen, font, f"Chime volume: {int(state['chime_gain'] * 100)}%",
+                       state["chime_gain"] / CHIME_GAIN_MAX, chime_origin,
+                       width=RSW, height=SLH, fill=False)
+
+        # ---- RIGHT column: BEADS menu (one card) ----
+        ui.draw_card(screen, pygame.Rect(beads_panel.x, beads_panel.y, RSW,
+                                         bp_panel.bottom - beads_panel.y))
+        brows = [(key, label, action == f"tool:{state['tool']}")
+                 for key, label, action in BEADS_BUTTONS]
+        ui.draw_panel(screen, font, title_font, "BEADS", brows,
+                      mouse_pos=mouse_pos, origin=beads_panel.topleft, width=RSW, fill=False)
+        ui.draw_slider(screen, font, f"Bead colour mix: {int(state['mix'] * 100)}%",
+                       (state["mix"] - MIX_MIN) / (MIX_MAX - MIX_MIN), mix_origin,
+                       width=RSW, height=SLH, fill=False)
+        ui.draw_slider(screen, font, f"Base bead chime: {int(state['bead_level'] / BEAD_GLOW_MAX * 100)}%",
+                       state["bead_level"] / BEAD_GLOW_MAX, bp_origin, width=RSW, height=SLH, fill=False)
+        voices = len(sound._voices) if sound.ok else 0
+        ui.draw_status(
+            screen, font,
+            [
+                f"chord: {chord_name}",
+                f"beads {len(beads)}   voices {voices}",
+                f"sound: {'on' if state['sound_on'] else 'off'}",
+            ],
+            origin=sound_status_origin, width=RSW,
+        )
+
+        # ---- RIGHT column: BEAD LEGEND (what each bead colour does) ----
+        lx, ly = legend_origin
+        screen.blit(title_font.render("BEAD EFFECTS", True, TEXT), (lx, ly))
+        for ti, bt in enumerate(BEAD_TYPES):
+            ry = ly + LEGEND_ROW * (ti + 1)
+            swatch = tuple(int(min(255, v * 255)) for v in bt["color"])
+            pygame.draw.circle(screen, swatch, (lx + 6, ry + 7), 6)
+            pygame.draw.circle(screen, (220, 224, 234), (lx + 6, ry + 7), 6, 1)
+            label = f"{bt['name']} \u2014 {BEAD_FX_DESC.get(bt['name'], '')}"
+            screen.blit(font.render(label, True, TEXT), (lx + 18, ry))
+
+        # chord dropdown options, drawn last so they overlay the controls below
+        if state["chord_open"]:
+            mp = pygame.mouse.get_pos()
+            for oi, (nm, _iv) in enumerate(opts):
+                r = option_rect(oi)
+                hovd = r.collidepoint(mp)
+                pygame.draw.rect(screen, (44, 56, 84) if hovd else (28, 36, 56), r)
+                pygame.draw.rect(screen, (64, 78, 110), r, 1)
+                col = (255, 230, 140) if oi == state["chord_idx"] else TEXT
+                screen.blit(font.render(nm, True, col), (r.x + 8, r.y + 3))
 
         pygame.display.flip()
 
-        if link is not None:
+        if device is not None:
             v = np.clip(out * brightness, 0, 1)
             v = np.power(v, engine.gamma)
-            link.send((v * 255 + 0.5).astype(np.uint8))
+            device.send_frame((v * 255 + 0.5).astype(np.uint8))
 
         clock.tick(fps)
 
-    if link is not None:
-        link.send(np.zeros((len(leds), 3), dtype=np.uint8))
-        link.close()
+    sound.close()
+    if device is not None:
+        device.send_frame(np.zeros((len(leds), 3), dtype=np.uint8))
+        device.close()
     pygame.quit()

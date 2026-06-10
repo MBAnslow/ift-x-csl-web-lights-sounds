@@ -106,6 +106,40 @@ class Web:
     def num_leds(self) -> int:
         return sum(1 for n in self.nodes if n.led)
 
+    def node_rings(self) -> tuple[dict[int, int], int]:
+        """Cluster nodes into concentric rings by distance from the web centre.
+
+        The physical webbing senses capacitance *per ring*, so this groups
+        nodes into those rings. Returns (ring_of, num_rings) where ring_of maps
+        node id -> ring index (0 = centre, increasing outward). Robust to
+        hand-edited webs: a new ring starts wherever the radial gap exceeds half
+        the typical ring spacing.
+        """
+        if not self.nodes:
+            return {}, 0
+        cx = sum(n.x for n in self.nodes) / len(self.nodes)
+        cy = sum(n.y for n in self.nodes) / len(self.nodes)
+        pairs = sorted((math.hypot(n.x - cx, n.y - cy), n.id) for n in self.nodes)
+        distinct: list[float] = []
+        for d, _ in pairs:
+            if not distinct or d - distinct[-1] > 1.0:
+                distinct.append(d)
+        gaps = [b - a for a, b in zip(distinct, distinct[1:])]
+        spacing = sorted(gaps)[len(gaps) // 2] if gaps else 1.0
+        tol = max(spacing * 0.5, 8.0)
+        levels: list[float] = []
+        ring_of: dict[int, int] = {}
+        for d, nid in pairs:
+            if not levels or d - levels[-1] > tol:
+                levels.append(d)
+            ring_of[nid] = len(levels) - 1
+        return ring_of, len(levels)
+
+    def led_rings(self) -> list[int]:
+        """Ring index per LED, in chain order (aligned with `leds()`)."""
+        ring_of, _ = self.node_rings()
+        return [ring_of.get(n.id, 0) for n in self.leds()]
+
     def nearest_node(
         self, x: float, y: float, max_dist: Optional[float] = None, led_only: bool = False
     ) -> Optional[Node]:

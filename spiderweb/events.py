@@ -188,9 +188,12 @@ class Propagate(Event):
 
     def __init__(self, sources, color=(1.0, 0.8, 0.2), speed=None, width=None,
                  start=0.0, duration=4.0, fade=True, metric="distance", gain=1.0,
-                 dist_falloff=1.0):
+                 dist_falloff=1.0, multi=False):
         super().__init__(color, start, duration)
         self.sources = [sources] if isinstance(sources, int) else list(sources)
+        # multi=True treats every source as an independent seed (e.g. all nodes
+        # on a ring) instead of the two ends of one edge.
+        self.multi = multi
         self.gain = gain  # intensity multiplier (>1 blooms toward white)
         # per-hop attenuation: distant nodes peak dimmer (1.0 = no attenuation)
         self.dist_falloff = dist_falloff
@@ -207,7 +210,7 @@ class Propagate(Event):
 
     def _ensure(self, ctx):
         if self._dist is None:
-            if len(self.sources) >= 2:
+            if len(self.sources) >= 2 and not self.multi:
                 seeds = ctx.web.edge_seed_leds(self.sources[0], self.sources[1])
             else:
                 seeds = set(self.sources)

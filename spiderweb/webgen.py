@@ -6,16 +6,23 @@ import math
 from spiderweb.web import Web
 
 
-def radial_web(center=None, spokes=8, rings=7, r0=None, dr=52.0, size=(900, 760)) -> Web:
+def radial_web(center=None, spokes=8, rings=7, r0=None, dr=52.0, size=None,
+               margin=70.0) -> Web:
     """A classic orb-weaver web: a central node, radial spokes, and `rings`
     concentric rings crossing them.
 
     Radial spacing is uniform by default (the centre-to-first-ring gap equals
     the ring-to-ring gap, i.e. r0 == dr), so a ripple/propagation from the
     centre reaches each ring at evenly spaced times.
+
+    When `size` is None the canvas is sized to fit the outermost ring plus a
+    margin, so the web fills the view regardless of the ring count.
     """
     if r0 is None:
         r0 = dr
+    if size is None:
+        side = int(2 * (r0 + dr * (rings - 1) + margin))
+        size = (side, side)
     web = Web(size=tuple(size))
     cx, cy = center if center else (size[0] / 2, size[1] / 2)
 

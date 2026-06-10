@@ -96,15 +96,27 @@ reaches a bead it flares brighter, and the light flowing *past* it onto the
 nodes downstream takes on a share of the bead's colour. Ripples that cross
 several beads blend their colours, so the whole web mixes.
 
+Each bead colour is also a different **lens** on the ripple travelling through
+it. No bead ever stops the signal — it is always passed on somehow:
+
+- **fast** (amber) — speeds the wave up on every strand beyond it
+- **funnel** (vivid green) — sends the signal on along a **single** direction only, in a super-saturated, extra-bright version of its colour
+- **bounce** (magenta) — duplicates the signal back the way it came
+
+So a single touch can race through a fast cluster, get funnelled into one bright
+beam, and throw return ripples back toward where it started — all in the same
+web.
+
 Where two ripples meet, their colours **average** (intensity-weighted) rather
 than just adding — so a red and a blue wave crossing read as purple, like two
 signals combining.
 
-- `1` / `2` ripple — distance / hops — click an edge to send a colour-mixing ripple
-- `3` overlap — click an edge to light its neighbourhood (also mixes bead colour along the path)
-- `4` bead — click a node to cycle its bead colour (cycles through the palette, then off)
-- `R` shuffle beads — randomise how many nodes are beads, which ones, and their colours
+- `1` ripple — click an edge to send a colour-mixing ripple through the web
+- `2` area — click an edge to light its neighbourhood (also mixes bead colour along the path)
+- `3` bead — click a node to cycle its bead **type** (fast → funnel → bounce → off)
+- `R` shuffle beads — randomise how many nodes are beads, which ones, and their types
 - `C` calibrate signal — step through background → hover → touch to set the threshold (see below)
+- `S` sound — toggle the responsive soundscape (see below)
 - `SPACE` ripple colour, `A` ambient, `X` clear ripples (keeps beads), `ESC` quit
 - **Trail slider** — afterglow, so colours linger and overlap
 - **Bead colour mix slider** — how strongly beads tint the light passing through
@@ -112,6 +124,39 @@ signals combining.
 - **Overlap reach / emission sliders** — how far an overlap spreads (active-node hops) and how strongly it falls off per hop
 - **Click threshold slider** — the signal level at which an edge registers a touch
 - **Ambient gain / Hover gain sliders** — amplify the idle ambient and the hover response independently; both stay normalised to the bands, so they only change how the basic look reads *within* the thresholds
+- **Volume slider** — master level of the responsive soundscape
+- **Drone / Chime volume sliders** — trim the bead chord drone and the ring-touch chimes independently
+- **Base bead chime slider** — the steady resonance the beads hold (their always-on glow) even when no ripple is washing over them; raising it keeps the chord drone humming, lowering it lets the beads fall quiet between touches
+- **Chord dropdown** — beads are the tones of a chord; pick the chord *quality* here. The options depend on how many beads there are (3 beads → triads like maj/min/sus, 4 → 7ths, 5 → 9ths, 6 → 11ths, 7 → 13ths; other counts fall back to a diatonic stack). Beads are ordered centre→outer = low→high, so the centre bead is the chord root.
+
+### Beads as a chord drone
+
+The beads are the tones of a sustained **chord drone** in the background. Its
+loudness tracks **web activation**: a faint floor while only the ambient is
+running, swelling louder as ripples (vibrations/activations) energise the web —
+bigger/stronger ripples make the chord drone louder. This is *separate* from the
+ring chimes below. Pick the chord quality from the dropdown (its choices track
+the bead count), order is centre→outer = low→high, and reshuffle beads with `R`.
+
+### Responsive soundscape
+
+On top of the light, the dream-catcher drives a live ambient **soundscape**
+(inspired by [Polpii/sensitive-webs](https://github.com/Polpii/sensitive-webs)).
+It's deliberately decoupled from the LEDs — it only listens to the same
+capacitive **signal**, not the nodes:
+
+- a continuous **bed** (low drone + airy noise + a soft chord) always plays so
+  there's never silence;
+- **hover intensity** (how far the signal sits up the hover band) opens the
+  timbre — brighter drone, louder shimmer/air, busier chime trickle;
+- a **ring touch** (a threshold crossing on a ring edge — never an axis/spoke
+  edge) rings a **chime**; outer rings ring higher, and it's fully polyphonic, so
+  many chimes overlap freely;
+- the **bead chord drone** (see above) sits underneath, swelling with activation;
+- toggle it with `S`, set the level with the **Volume** slider.
+
+Audio uses `sounddevice` (PortAudio). If it (or an output device) isn't
+available the simulator runs silently — the button shows `Sound: (no device)`.
 
 Beads start in a random arrangement (and are drawn as coloured rings); hit `R`
 to reshuffle.
@@ -158,6 +203,62 @@ Find the port, then stream:
 ```
 
 Everything you do in the simulator is sent live to the LEDs.
+
+## 4. Backend server (live installation)
+
+For the real installation the webbing senses **capacitance per ring** and the
+host turns that into light + sound. A FastAPI backend ties it together:
+
+```
+ESP32-S3  --USB serial-->  per-ring capacitance
+                            |
+                  RingProcessor (calibrate -> intensity / touch per ring)
+                            |
+        Engine (ring ripples, ring-tinted hover glow, ambient)  +  Soundscape
+                            |
+        gamma + brightness --USB serial--> SK6805 LEDs (same chain order as the UI)
+```
+
+Flash `firmware/spiderweb_xiao_s3/spiderweb_xiao_s3.ino` to the XIAO ESP32-S3
+(it both drives the SK6805 strip *and* streams per-ring touch readings). Wire one
+conductive thread per ring to a touch GPIO listed in `RING_PINS` (centre ring
+first, to match `Web.node_rings()`), and set `LED_PIN` / `NUM_LEDS`.
+
+Run the backend:
+
+```bash
+.venv/bin/python run.py serve --serial /dev/tty.usbserial-XXXX   # real device
+.venv/bin/python run.py serve                                    # simulated (no board)
+```
+
+The install currently has **4 sensor rings** (`--rings 4`, the default). The web's
+finer concentric geometry is collapsed into that many contiguous ring zones
+(centre out) without touching the LED layout; pass `--rings 0` to use the web's
+own ring count, or another number to match your hardware. The dashboard and
+`RingProcessor` adapt automatically.
+
+Then open <http://127.0.0.1:8000>. The dashboard mirrors the physical LEDs
+one-for-one, shows the live per-ring signal, lets you **calibrate**
+(background -> hover -> touch) and **simulate touches** per ring when no hardware
+is attached.
+
+REST / WebSocket API:
+
+| route | what |
+|-------|------|
+| `GET /api/state` | device status, per-ring values/intensity, config |
+| `GET /api/leds` | LED positions + ring index (chain order) |
+| `GET /api/frame` | latest RGB buffer (flat list, chain order) |
+| `POST /api/config` | patch brightness, hover/ambient gain, ripple speed/falloff, volume, sound on/off |
+| `POST /api/calibrate` | advance the background/hover/touch calibration |
+| `POST /api/sim/touch` | `{ring, intensity}` — inject a touch (simulated device) |
+| `POST /api/sim/rings` | `{values:[...]}` — inject raw per-ring values |
+| `WS /ws` | live `{state, rgb}` stream at ~30 fps |
+
+A ring **touch** spawns a ripple from every LED on that ring (hop-based, with
+per-hop falloff) and triggers that ring's chime; **hover** intensity tints those
+ring's LEDs and drives the soundscape timbre. See `PROTOCOL.md` for the
+bidirectional serial framing.
 
 ## Scripting your own events
 

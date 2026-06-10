@@ -1,3 +1,6 @@
 numpy>=1.24
 pygame>=2.5
 pyserial>=3.5
+sounddevice>=0.4  # responsive soundscape in dream-catcher mode (optional)
+fastapi>=0.110    # backend server that drives the ESP32 + sound
+uvicorn[standard]>=0.27
