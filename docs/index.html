@@ -6,70 +6,277 @@
   <title>Spider-web Dream (Web)</title>
   <style>
     :root { color-scheme: dark; }
-    html, body { margin: 0; height: 100%; background: #0a0c12; color: #d4dcef; font: 13px system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-    #app { display: grid; grid-template-columns: 320px 1fr; height: 100%; }
-    #side { border-right: 1px solid #1d2433; padding: 12px; box-sizing: border-box; overflow-y: auto; background: #070a11; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #0a0c12;
+      color: #d4dcef;
+      font: 13px system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+    #app {
+      display: grid;
+      grid-template-columns: 320px 1fr 300px;
+      height: 100%;
+    }
+    .side {
+      padding: 12px;
+      box-sizing: border-box;
+      overflow-y: auto;
+      background: #070a11;
+    }
+    #leftSide { border-right: 1px solid #1d2433; }
+    #rightSide { border-left: 1px solid #1d2433; }
+    #canvasWrap { min-width: 0; position: relative; background: #08090e; }
+    canvas { width: 100%; height: 100%; display: block; }
+
     h1 { margin: 0 0 4px; font-size: 16px; }
     .sub { margin: 0 0 12px; color: #8da0c0; }
+    .section {
+      margin-bottom: 8px;
+      border: 1px solid #26314a;
+      border-radius: 8px;
+      padding: 8px;
+      background: #0d1320;
+    }
+    .section h2 {
+      margin: 0 0 8px;
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      color: #ffd766;
+    }
     .row { margin: 6px 0; display: flex; gap: 6px; flex-wrap: wrap; }
-    button { background: #1d2740; color: #d4dcef; border: 1px solid #2c3a5c; border-radius: 6px; padding: 6px 9px; cursor: pointer; }
+    button {
+      background: #1d2740;
+      color: #d4dcef;
+      border: 1px solid #2c3a5c;
+      border-radius: 6px;
+      padding: 6px 9px;
+      cursor: pointer;
+    }
     button:hover { background: #27345a; }
-    button.active { background: #ffd766; color: #131720; border-color: #ffd766; }
-    label { display: block; margin: 8px 0 2px; color: #9eb0ce; }
-    input[type="range"] { width: 100%; }
-    .swatch { width: 22px; height: 14px; border: 1px solid #32415f; border-radius: 3px; display: inline-block; vertical-align: middle; margin-left: 6px; }
-    #status { margin-top: 10px; white-space: pre-wrap; font: 11px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; color: #7fa7d8; }
-    #canvasWrap { min-width: 0; position: relative; }
-    canvas { width: 100%; height: 100%; display: block; }
-    .hint { margin-top: 10px; color: #8da0c0; font-size: 12px; line-height: 1.35; }
-    .pill { display: inline-block; font: 11px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; padding: 1px 6px; border: 1px solid #344564; border-radius: 999px; color: #9eb0ce; margin-right: 6px; margin-top: 4px; }
+    button.active {
+      background: #ffd766;
+      color: #131720;
+      border-color: #ffd766;
+    }
+    label {
+      display: block;
+      margin: 8px 0 2px;
+      color: #9eb0ce;
+    }
+    input[type="range"], select {
+      width: 100%;
+      box-sizing: border-box;
+    }
+    select {
+      background: #11182a;
+      color: #d4dcef;
+      border: 1px solid #2c3a5c;
+      border-radius: 6px;
+      padding: 6px 8px;
+    }
+    .swatch {
+      width: 22px;
+      height: 14px;
+      border: 1px solid #32415f;
+      border-radius: 3px;
+      display: inline-block;
+      vertical-align: middle;
+      margin-left: 6px;
+    }
+    .status {
+      margin-top: 8px;
+      white-space: pre-wrap;
+      font: 11px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: #7fa7d8;
+    }
+    .legendRow {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 6px 0;
+      color: #c7d4ea;
+      font-size: 12px;
+    }
+    .dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      border: 1px solid #d6dff0;
+      flex: 0 0 auto;
+    }
+
+    #signalMeterWrap { margin-top: 6px; }
+    #meterTrack {
+      position: relative;
+      height: 16px;
+      border-radius: 8px;
+      border: 1px solid #2c3a5c;
+      overflow: hidden;
+      background: #2a313d;
+    }
+    #meterFill {
+      position: absolute;
+      left: 0;
+      top: 2px;
+      bottom: 2px;
+      width: 0;
+      background: rgba(140, 195, 255, 0.9);
+    }
+    .meterHandle {
+      position: absolute;
+      top: -4px;
+      width: 8px;
+      height: 24px;
+      border-radius: 4px;
+      background: #ffe79a;
+      border: 1px solid #f7d15f;
+      transform: translateX(-4px);
+      cursor: ew-resize;
+    }
+    #noiseHandle { background: #9ec8ff; border-color: #7eb1ff; }
+    #meterBands {
+      margin-top: 4px;
+      display: flex;
+      justify-content: space-between;
+      color: #90a5c6;
+      font-size: 11px;
+    }
+    .hint {
+      margin-top: 10px;
+      color: #8da0c0;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .pill {
+      display: inline-block;
+      font: 11px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      padding: 1px 6px;
+      border: 1px solid #344564;
+      border-radius: 999px;
+      color: #9eb0ce;
+      margin-right: 6px;
+      margin-top: 4px;
+    }
   </style>
 </head>
 <body>
   <div id="app">
-    <div id="side">
+    <aside id="leftSide" class="side">
       <h1>Dream (Web)</h1>
       <p class="sub">Standalone Pages version. No backend/device.</p>
 
-      <div class="row">
-        <button id="toolRipple">1 Ripple</button>
-        <button id="toolArea">2 Area</button>
-        <button id="toolBead">3 Bead</button>
-      </div>
-      <div class="row">
-        <button id="shuffle">R Shuffle beads</button>
-        <button id="clear">X Clear ripples</button>
-      </div>
-      <div class="row">
-        <button id="ambient">A Ambient</button>
-        <button id="cycleColor">Space Colour</button>
-      </div>
+      <section class="section">
+        <h2>IMPULSE</h2>
+        <div class="row">
+          <button id="toolRipple">1 Ripple</button>
+          <button id="toolArea">2 Area</button>
+          <button id="cycleColor">Space Colour</button>
+          <button id="clear">X Clear ripples</button>
+        </div>
 
-      <label>Ripple colour <span id="colorSwatch" class="swatch"></span></label>
-      <label>Trail <span id="trailV"></span></label>
-      <input id="trail" type="range" min="0" max="5" step="0.05" value="3">
+        <label>Ripple colour <span id="colorSwatch" class="swatch"></span></label>
+        <label>Trail <span id="trailV"></span></label>
+        <input id="trail" type="range" min="0" max="5" step="0.05" value="3">
 
-      <label>Bead colour mix <span id="mixV"></span></label>
-      <input id="mix" type="range" min="0.1" max="0.95" step="0.01" value="0.6">
+        <label>Signal decay (half-life) <span id="decayV"></span></label>
+        <input id="decay" type="range" min="0.15" max="3.0" step="0.05" value="2.5">
 
-      <label>Signal decay (half-life) <span id="decayV"></span></label>
-      <input id="decay" type="range" min="0.15" max="3.0" step="0.05" value="2.5">
+        <label>Area reach (hops) <span id="reachV"></span></label>
+        <input id="reach" type="range" min="1" max="5" step="1" value="1">
 
-      <label>Area reach (hops) <span id="reachV"></span></label>
-      <input id="reach" type="range" min="1" max="5" step="1" value="1">
+        <label>Area emission / hop <span id="falloffV"></span></label>
+        <input id="falloff" type="range" min="0.1" max="0.95" step="0.01" value="0.5">
 
-      <label>Area emission / hop <span id="falloffV"></span></label>
-      <input id="falloff" type="range" min="0.1" max="0.95" step="0.01" value="0.5">
+        <label>Hover gain <span id="hoverV"></span></label>
+        <input id="hoverGain" type="range" min="0" max="3" step="0.01" value="0.7">
+      </section>
+
+      <section class="section">
+        <h2>SIGNAL</h2>
+        <div class="row">
+          <button id="calibrate">C Calibrate signal</button>
+        </div>
+        <div id="signalMeterWrap">
+          <div id="meterTrack">
+            <div id="meterFill"></div>
+            <div id="noiseHandle" class="meterHandle"></div>
+            <div id="thresholdHandle" class="meterHandle"></div>
+          </div>
+          <div id="meterBands">
+            <span>noise</span>
+            <span>hover</span>
+            <span>touch</span>
+          </div>
+        </div>
+        <div id="signalInfo" class="status"></div>
+      </section>
+
+      <section class="section">
+        <h2>AMBIENT</h2>
+        <div class="row">
+          <button id="ambient">A Ambient</button>
+        </div>
+        <label>Ambient gain <span id="ambientV"></span></label>
+        <input id="ambientGain" type="range" min="0" max="1.5" step="0.01" value="0.4">
+        <div id="leftStatus" class="status"></div>
+      </section>
 
       <div class="hint">
         <span class="pill">1</span>Ripple from nearest ring edge<br>
         <span class="pill">2</span>Area neighbourhood effect<br>
-        <span class="pill">3</span>Click a node to cycle bead type
+        <span class="pill">3</span>Bead tool is on the right panel
       </div>
+    </aside>
 
-      <div id="status"></div>
-    </div>
     <div id="canvasWrap"><canvas id="c"></canvas></div>
+
+    <aside id="rightSide" class="side">
+      <section class="section">
+        <h2>SOUND</h2>
+        <div class="row">
+          <button id="soundToggle">S Sound: off</button>
+        </div>
+        <label>Master volume <span id="volV"></span></label>
+        <input id="volume" type="range" min="0" max="1" step="0.01" value="0.7">
+
+        <label>Drone volume <span id="droneV"></span></label>
+        <input id="drone" type="range" min="0" max="1.6" step="0.01" value="1.0">
+
+        <label>Chime volume <span id="chimeV"></span></label>
+        <input id="chime" type="range" min="0" max="1.6" step="0.01" value="0.35">
+
+        <label>Chord quality</label>
+        <select id="chordSelect"></select>
+      </section>
+
+      <section class="section">
+        <h2>BEADS</h2>
+        <div class="row">
+          <button id="toolBead">3 Bead (cycle type)</button>
+          <button id="shuffle">R Shuffle beads</button>
+        </div>
+        <label>Bead colour mix <span id="mixV"></span></label>
+        <input id="mix" type="range" min="0.1" max="0.95" step="0.01" value="0.6">
+
+        <label>Base bead chime <span id="beadV"></span></label>
+        <input id="beadLevel" type="range" min="0" max="0.8" step="0.01" value="0.08">
+        <div id="rightStatus" class="status"></div>
+      </section>
+
+      <section class="section">
+        <h2>BEAD EFFECTS</h2>
+        <div class="legendRow"><span class="dot" style="background:#ffd926;"></span>fast — speeds wave up</div>
+        <div class="legendRow"><span class="dot" style="background:#19ff80;"></span>funnel — one way, intense colour</div>
+        <div class="legendRow"><span class="dot" style="background:#ff3399;"></span>bounce — duplicates back toward source</div>
+      </section>
+
+      <div class="hint">
+        <span class="pill">S</span>Toggle sound<br>
+        <span class="pill">A</span>Ambient mode<br>
+        <span class="pill">X</span>Clear ripples
+      </div>
+    </aside>
   </div>
 
   <script src="./main.js"></script>
