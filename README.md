@@ -15,6 +15,24 @@ over USB serial to an ESP32, which is a thin pixel-pusher for the LED chain.
  you  ->  Python engine (2D space, events)  -->  USB serial  -->  ESP32  -->  SK6805 chain
 ```
 
+## Which version is which
+
+There are three different runtime "versions" in this repo:
+
+1. **Desktop dream app (full reference experience)**  
+   `run.py dream` (Python + pygame).  
+   This is the canonical version with the complete interaction/audio behavior.
+
+2. **Backend/dashboard app (installation control path)**  
+   `run.py serve` (FastAPI + browser dashboard).  
+   This is for device-facing installation control and calibration.
+
+3. **GitHub Pages web app (standalone approximation)**  
+   `docs/` deployed to Pages.  
+   This is a browser reconstruction of the dream interface for web use only. It
+   is intentionally an **approximation** of the Python dream app, not a bit-for-
+   bit identical runtime.
+
 ## Install
 
 Use a virtual environment (the on-screen controls need a pygame build with the
@@ -261,9 +279,12 @@ Enable Pages in GitHub (`Settings -> Pages -> Build and deployment -> GitHub
 Actions`), then push to `main`. The workflow publishes the `docs/` folder.
 
 The Pages app is standalone: it does **not** connect to hardware or require the
-FastAPI backend. It runs local simulation only (edge ripples/area, bead cycling,
-ambient modes, and trail/mix/decay controls) so it matches the main interaction
-model without device I/O.
+FastAPI backend. It runs local simulation only.
+
+Important: this web app is an **approximation** of the Python `run.py dream`
+experience. It aims to preserve the same interaction model and control layout,
+but browser audio/graphics/runtime constraints mean it is not guaranteed to be
+identical to the desktop pygame implementation.
 
 It loads its web geometry from `docs/web.json` (a snapshot of `config/web.json`).
 If you update the physical layout, copy/regenerate `docs/web.json` before deploy.
