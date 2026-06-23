@@ -248,6 +248,22 @@ per-hop falloff) and triggers that ring's chime; **hover** intensity tints those
 ring's LEDs and drives the soundscape timbre. See `PROTOCOL.md` for the
 bidirectional serial framing.
 
+## 5. GitHub Pages main interface (standalone)
+
+This repo ships a browser version of the dream interface in `docs/` and deploys
+it with `.github/workflows/pages.yml`.
+
+Enable Pages in GitHub (`Settings -> Pages -> Build and deployment -> GitHub
+Actions`), then push to `main`. The workflow publishes the `docs/` folder.
+
+The Pages app is standalone: it does **not** connect to hardware or require the
+FastAPI backend. It runs local simulation only (edge ripples/area, bead cycling,
+ambient modes, and trail/mix/decay controls) so it matches the main interaction
+model without device I/O.
+
+It loads its web geometry from `docs/web.json` (a snapshot of `config/web.json`).
+If you update the physical layout, copy/regenerate `docs/web.json` before deploy.
+
 ## Scripting your own events
 
 The engine is plain Python — drive it headlessly without the pygame window:
