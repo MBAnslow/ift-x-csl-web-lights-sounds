@@ -10,6 +10,7 @@
   const SIGNAL_SCALE = 2.0;
   const CLICK_AMP = 1.5;
   const HOVER_COLOR = [0.30, 0.44, 0.70];
+  const AMBIENT_VIS_GAIN = 1.15;
   const NOTE_ROOT = 220.0;
   const BEAD_GLOW_MAX = 0.8;
 
@@ -354,7 +355,7 @@
     overlapHops: 1,
     overlapFalloff: 0.5,
     hoverGain: 0.7,
-    ambientGain: 0.4,
+    ambientGain: 0.8,
     threshold: 0.85,
     noiseMax: 0.30,
     calStep: 0,
@@ -389,6 +390,8 @@
     persist: [],
     hoverEdgeIdx: null,
     hoverNode: null,
+    twinklePhase: [],
+    twinkleFreq: [],
     transform: { s: 1, ox: 0, oy: 0 },
     t0: performance.now() / 1000,
     lastFrame: performance.now() / 1000,
@@ -609,35 +612,63 @@
     }
     cx /= Math.max(rt.ledPos.length, 1);
     cy /= Math.max(rt.ledPos.length, 1);
+    const base = [0.22, 0.34, 0.52];
+    const amp = 0.78;
+    const gain = state.ambientGain * AMBIENT_VIS_GAIN;
+    const speed = 0.25;
+    const twoPi = 6.283185307179586;
 
     for (let i = 0; i < n; i += 1) {
       const p = rt.ledPos[i];
-      let a = 0.08;
-      let c = [0.35, 0.45, 0.7];
+      let c = [0, 0, 0];
       if (mode === "shimmer") {
-        a = 0.08 * (0.65 + 0.35 * Math.sin(t * 0.9 + i * 0.37));
-        c = [0.25, 0.4, 0.75];
+        const phase = p[0] * 0.012 * 1.3 + p[1] * 0.012 * 0.7;
+        const wave = 0.5 + 0.5 * Math.sin(twoPi * (t * speed) + phase * twoPi);
+        const level = (1.0 - amp) + amp * wave;
+        c = [base[0] * level, base[1] * level, base[2] * level];
       } else if (mode === "breathe") {
-        a = 0.09 * (0.45 + 0.55 * (0.5 + 0.5 * Math.sin(t * 0.45)));
-        c = [0.35, 0.5, 0.8];
+        const wave = 0.5 + 0.5 * Math.sin(twoPi * t * speed);
+        const level = (1.0 - amp) + amp * wave;
+        c = [base[0] * level, base[1] * level, base[2] * level];
       } else if (mode === "twinkle") {
-        const tw = 0.5 + 0.5 * Math.sin(t * 2.1 + i * 2.73);
-        a = 0.1 * Math.pow(tw, 3.0);
-        c = [0.5, 0.62, 0.9];
+        // Match the Python ambient twinkle: per-LED random phase/frequency
+        // and sparse peaks, so it reads as sparkle instead of a smooth pulse.
+        const ph = rt.twinklePhase[i] || 0;
+        const fr = rt.twinkleFreq[i] || 1.0;
+        const wave = 0.5 + 0.5 * Math.sin(t * speed * twoPi * fr * 4 + ph);
+        const sparkle = Math.pow(wave, 3.0);
+        const spark = [0.55, 0.60, 0.80];
+        c = [
+          0.18 * base[0] + sparkle * spark[0] * 0.55,
+          0.18 * base[1] + sparkle * spark[1] * 0.55,
+          0.18 * base[2] + sparkle * spark[2] * 0.55,
+        ];
       } else if (mode === "wander") {
-        const dx = p[0] - cx;
-        const dy = p[1] - cy;
-        const ang = Math.atan2(dy, dx);
-        a = 0.08 * (0.4 + 0.6 * (0.5 + 0.5 * Math.sin(t * 0.9 + ang * 2.5)));
-        c = [0.3, 0.55, 0.85];
+        const w = rt.web.size[0];
+        const h = rt.web.size[1];
+        const wx = w * (0.5 + 0.42 * Math.sin(t * speed * 1.7));
+        const wy = h * (0.5 + 0.42 * Math.cos(t * speed * 1.3));
+        const d = Math.hypot(p[0] - wx, p[1] - wy);
+        const glow = Math.exp(-0.5 * Math.pow(d / (Math.min(w, h) * 0.18), 2));
+        const tint = [0.30, 0.55, 1.0];
+        c = [
+          0.12 * base[0] + glow * tint[0] * 0.8,
+          0.12 * base[1] + glow * tint[1] * 0.8,
+          0.12 * base[2] + glow * tint[2] * 0.8,
+        ];
       } else if (mode === "rainbow") {
-        const h = (0.15 * t + i * 0.03) % 1.0;
-        c = hsvToRgb(h, 0.75, 1.0);
-        a = 0.08;
+        const h = (p[0] / Math.max(rt.web.size[0], 1) * 0.5 +
+                   p[1] / Math.max(rt.web.size[1], 1) * 0.5 +
+                   t * speed * 0.6) % 1.0;
+        const rgb = hsvToRgb(h, 0.85, 0.5);
+        const level = 0.5 + 0.5 * amp;
+        c = [rgb[0] * level, rgb[1] * level, rgb[2] * level];
+      } else {
+        c = [0, 0, 0];
       }
-      out[i][0] = c[0] * a * state.ambientGain;
-      out[i][1] = c[1] * a * state.ambientGain;
-      out[i][2] = c[2] * a * state.ambientGain;
+      out[i][0] = c[0] * gain;
+      out[i][1] = c[1] * gain;
+      out[i][2] = c[2] * gain;
     }
     return out;
   }
@@ -716,6 +747,15 @@
 
     rt.persist = new Array(n);
     for (let i = 0; i < n; i += 1) rt.persist[i] = [0, 0, 0];
+
+    // Deterministic per-LED twinkle variation (same style as Python Ambient).
+    const rng = seededRng(1234);
+    rt.twinklePhase = new Array(n);
+    rt.twinkleFreq = new Array(n);
+    for (let i = 0; i < n; i += 1) {
+      rt.twinklePhase[i] = rng() * Math.PI * 2;
+      rt.twinkleFreq[i] = 0.5 + rng() * 1.3;
+    }
 
     rt.signals = new EdgeSignals(rt.interactiveEdges, rt.nodesById);
   }
