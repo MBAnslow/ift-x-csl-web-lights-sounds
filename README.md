@@ -1,8 +1,12 @@
 # Spider-web LED
 
-Map addressable LEDs (SK6805 / WS2812-compatible) into a 2D spider-web layout
-and drive them with **spatial events** — ripples, moving blobs, overlap regions,
-and signals that propagate along the web's strands.
+This project started as a workshop demo for a physical spider-web light/sound
+instrument. The web could be touched and "played" like an instrument, with the
+software turning those interactions into responsive light and audio.
+
+It maps addressable LEDs (SK6805 / WS2812-compatible) into a 2D spider-web
+layout and drives them with **spatial events** — ripples, moving blobs, overlap
+regions, and signals that propagate along the web's strands.
 
 The "brain" runs in Python on your computer. It renders frames and streams them
 over USB serial to an ESP32, which is a thin pixel-pusher for the LED chain.
