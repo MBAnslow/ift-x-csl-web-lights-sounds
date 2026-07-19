@@ -658,10 +658,30 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
                 legend_origin[1] + legend_h + 12)
 
     pygame.init()
-    screen = pygame.display.set_mode((win_w, win_h))
+    display_info = pygame.display.Info()
+    max_w = max(640, display_info.current_w - 80)
+    max_h = max(480, display_info.current_h - 120)
+    view_scale = min(1.0, max_w / max(win_w, 1), max_h / max(win_h, 1))
+    scaled_size = (max(320, int(win_w * view_scale)),
+                   max(240, int(win_h * view_scale)))
+
+    if view_scale < 0.995:
+        display_surface = pygame.display.set_mode(scaled_size)
+        screen = pygame.Surface((win_w, win_h)).convert()
+    else:
+        display_surface = pygame.display.set_mode((win_w, win_h))
+        screen = display_surface
     pygame.display.set_caption("Dream-catcher simulator")
     font, title_font = ui.make_fonts()
     clock = pygame.time.Clock()
+
+    def _logical_pos(pos: tuple[int, int]) -> tuple[int, int]:
+        if view_scale >= 0.995:
+            return pos
+        return (int(pos[0] / view_scale), int(pos[1] / view_scale))
+
+    def _mouse_pos() -> tuple[int, int]:
+        return _logical_pos(pygame.mouse.get_pos())
 
     leds = web.leds()
     led_pos = [(int(n.x) + SIDEBAR_W, int(n.y)) for n in leds]
@@ -909,100 +929,101 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
         color = PALETTE[state["color_idx"]]
 
         for ev in pygame.event.get():
+            ev_pos = _logical_pos(ev.pos) if hasattr(ev, "pos") else None
             if ev.type == pygame.QUIT:
                 state["run"] = False
             elif ev.type == pygame.KEYDOWN and ev.key in KEYMAP:
                 activate(KEYMAP[ev.key])
             elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
-                if ev.pos[0] < SIDEBAR_W:
+                if ev_pos[0] < SIDEBAR_W:
                     # ---- LEFT column: IMPULSE + AMBIENT menus ----
                     hit = next((i for i, r in enumerate(impulse_rows)
-                                if r.collidepoint(ev.pos)), None)
+                                if r.collidepoint(ev_pos)), None)
                     srow = next((i for i, r in enumerate(signal_rows)
-                                 if r.collidepoint(ev.pos)), None)
+                                 if r.collidepoint(ev_pos)), None)
                     arow = next((i for i, r in enumerate(ambient_rows)
-                                 if r.collidepoint(ev.pos)), None)
+                                 if r.collidepoint(ev_pos)), None)
                     if hit is not None:
                         activate(IMPULSE_BUTTONS[hit][2])
                     elif srow is not None:
                         activate(SIGNAL_BUTTONS[srow][2])
                     elif arow is not None:
                         activate(AMBIENT_BUTTONS[arow][2])
-                    elif trail_panel.collidepoint(ev.pos):
+                    elif trail_panel.collidepoint(ev_pos):
                         state["drag_target"] = "trail"
-                        state["trail"] = ui.value_from_x(trail_track, ev.pos[0]) * TRAIL_MAX
-                    elif decay_panel.collidepoint(ev.pos):
+                        state["trail"] = ui.value_from_x(trail_track, ev_pos[0]) * TRAIL_MAX
+                    elif decay_panel.collidepoint(ev_pos):
                         state["drag_target"] = "decay"
                         state["decay"] = DECAY_MIN + ui.value_from_x(
-                            decay_track, ev.pos[0]) * (DECAY_MAX - DECAY_MIN)
-                    elif reach_panel.collidepoint(ev.pos):
+                            decay_track, ev_pos[0]) * (DECAY_MAX - DECAY_MIN)
+                    elif reach_panel.collidepoint(ev_pos):
                         state["drag_target"] = "reach"
                         state["overlap_hops"] = 1 + round(
-                            ui.value_from_x(reach_track, ev.pos[0]) * (OV_MAX_HOPS - 1))
-                    elif ovf_panel.collidepoint(ev.pos):
+                            ui.value_from_x(reach_track, ev_pos[0]) * (OV_MAX_HOPS - 1))
+                    elif ovf_panel.collidepoint(ev_pos):
                         state["drag_target"] = "ovf"
                         state["overlap_falloff"] = OVF_MIN + ui.value_from_x(
-                            ovf_track, ev.pos[0]) * (OVF_MAX - OVF_MIN)
-                    elif hov_panel.collidepoint(ev.pos):
+                            ovf_track, ev_pos[0]) * (OVF_MAX - OVF_MIN)
+                    elif hov_panel.collidepoint(ev_pos):
                         state["drag_target"] = "hov"
                         state["hover_gain"] = HOV_GAIN_MIN + ui.value_from_x(
-                            hov_track, ev.pos[0]) * (HOV_GAIN_MAX - HOV_GAIN_MIN)
-                    elif amb_panel.collidepoint(ev.pos):
+                            hov_track, ev_pos[0]) * (HOV_GAIN_MAX - HOV_GAIN_MIN)
+                    elif amb_panel.collidepoint(ev_pos):
                         state["drag_target"] = "amb"
                         state["ambient_gain"] = AMB_GAIN_MIN + ui.value_from_x(
-                            amb_track, ev.pos[0]) * (AMB_GAIN_MAX - AMB_GAIN_MIN)
-                    elif meter_hit.collidepoint(ev.pos):
+                            amb_track, ev_pos[0]) * (AMB_GAIN_MAX - AMB_GAIN_MIN)
+                    elif meter_hit.collidepoint(ev_pos):
                         # grab whichever band boundary (noise / touch) is nearer
-                        dn = abs(ev.pos[0] - meter_x(state["noise_max"]))
-                        dt = abs(ev.pos[0] - meter_x(state["threshold"]))
+                        dn = abs(ev_pos[0] - meter_x(state["noise_max"]))
+                        dt = abs(ev_pos[0] - meter_x(state["threshold"]))
                         target = "m_noise" if dn <= dt else "m_thr"
                         state["drag_target"] = target
-                        v = meter_value(ev.pos[0])
+                        v = meter_value(ev_pos[0])
                         if target == "m_noise":
                             state["noise_max"] = min(v, state["threshold"] - 0.03)
                         else:
                             state["threshold"] = max(v, state["noise_max"] + 0.03)
-                elif ev.pos[0] >= RIGHT_X:
+                elif ev_pos[0] >= RIGHT_X:
                     # ---- RIGHT column: SOUND + BEADS menus ----
-                    if dd_rect.collidepoint(ev.pos):
+                    if dd_rect.collidepoint(ev_pos):
                         state["chord_open"] = not state["chord_open"]
                     elif state["chord_open"]:
                         _opts = _chord_options(len(beads))
                         sel = next((oi for oi in range(len(_opts))
-                                    if option_rect(oi).collidepoint(ev.pos)), None)
+                                    if option_rect(oi).collidepoint(ev_pos)), None)
                         if sel is not None:
                             state["chord_idx"] = sel
                         state["chord_open"] = False
                     else:
                         shit = next((i for i, r in enumerate(sound_rows)
-                                     if r.collidepoint(ev.pos)), None)
+                                     if r.collidepoint(ev_pos)), None)
                         bhit = next((i for i, r in enumerate(beads_rows)
-                                     if r.collidepoint(ev.pos)), None)
+                                     if r.collidepoint(ev_pos)), None)
                         if shit is not None:
                             activate(SOUND_BUTTONS[shit][2])
                         elif bhit is not None:
                             activate(BEADS_BUTTONS[bhit][2])
-                        elif vol_panel.collidepoint(ev.pos):
+                        elif vol_panel.collidepoint(ev_pos):
                             state["drag_target"] = "vol"
-                            state["volume"] = ui.value_from_x(vol_track, ev.pos[0])
-                        elif drone_panel.collidepoint(ev.pos):
+                            state["volume"] = ui.value_from_x(vol_track, ev_pos[0])
+                        elif drone_panel.collidepoint(ev_pos):
                             state["drag_target"] = "drone"
                             state["drone_gain"] = ui.value_from_x(
-                                drone_track, ev.pos[0]) * DRONE_GAIN_MAX
-                        elif chime_panel.collidepoint(ev.pos):
+                                drone_track, ev_pos[0]) * DRONE_GAIN_MAX
+                        elif chime_panel.collidepoint(ev_pos):
                             state["drag_target"] = "chime"
                             state["chime_gain"] = ui.value_from_x(
-                                chime_track, ev.pos[0]) * CHIME_GAIN_MAX
-                        elif mix_panel.collidepoint(ev.pos):
+                                chime_track, ev_pos[0]) * CHIME_GAIN_MAX
+                        elif mix_panel.collidepoint(ev_pos):
                             state["drag_target"] = "mix"
                             state["mix"] = MIX_MIN + ui.value_from_x(
-                                mix_track, ev.pos[0]) * (MIX_MAX - MIX_MIN)
-                        elif bp_panel.collidepoint(ev.pos):
+                                mix_track, ev_pos[0]) * (MIX_MAX - MIX_MIN)
+                        elif bp_panel.collidepoint(ev_pos):
                             state["drag_target"] = "bp"
                             state["bead_level"] = ui.value_from_x(
-                                bp_track, ev.pos[0]) * BEAD_GLOW_MAX
+                                bp_track, ev_pos[0]) * BEAD_GLOW_MAX
                 else:
-                    mx, my = ev.pos[0] - SIDEBAR_W, ev.pos[1]
+                    mx, my = ev_pos[0] - SIDEBAR_W, ev_pos[1]
                     tool = state["tool"]
                     if tool in ("ripple_hops", "overlap"):
                         # a press doesn't fire directly -- it injects a touch
@@ -1022,46 +1043,46 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
                             refresh_beads()
             elif ev.type == pygame.MOUSEMOTION and state["drag_target"]:
                 if state["drag_target"] == "trail":
-                    state["trail"] = ui.value_from_x(trail_track, ev.pos[0]) * TRAIL_MAX
+                    state["trail"] = ui.value_from_x(trail_track, ev_pos[0]) * TRAIL_MAX
                 elif state["drag_target"] == "mix":
                     state["mix"] = MIX_MIN + ui.value_from_x(
-                        mix_track, ev.pos[0]) * (MIX_MAX - MIX_MIN)
+                        mix_track, ev_pos[0]) * (MIX_MAX - MIX_MIN)
                 elif state["drag_target"] == "decay":
                     state["decay"] = DECAY_MIN + ui.value_from_x(
-                        decay_track, ev.pos[0]) * (DECAY_MAX - DECAY_MIN)
+                        decay_track, ev_pos[0]) * (DECAY_MAX - DECAY_MIN)
                 elif state["drag_target"] == "reach":
                     state["overlap_hops"] = 1 + round(
-                        ui.value_from_x(reach_track, ev.pos[0]) * (OV_MAX_HOPS - 1))
+                        ui.value_from_x(reach_track, ev_pos[0]) * (OV_MAX_HOPS - 1))
                 elif state["drag_target"] == "ovf":
                     state["overlap_falloff"] = OVF_MIN + ui.value_from_x(
-                        ovf_track, ev.pos[0]) * (OVF_MAX - OVF_MIN)
+                        ovf_track, ev_pos[0]) * (OVF_MAX - OVF_MIN)
                 elif state["drag_target"] == "amb":
                     state["ambient_gain"] = AMB_GAIN_MIN + ui.value_from_x(
-                        amb_track, ev.pos[0]) * (AMB_GAIN_MAX - AMB_GAIN_MIN)
+                        amb_track, ev_pos[0]) * (AMB_GAIN_MAX - AMB_GAIN_MIN)
                 elif state["drag_target"] == "hov":
                     state["hover_gain"] = HOV_GAIN_MIN + ui.value_from_x(
-                        hov_track, ev.pos[0]) * (HOV_GAIN_MAX - HOV_GAIN_MIN)
+                        hov_track, ev_pos[0]) * (HOV_GAIN_MAX - HOV_GAIN_MIN)
                 elif state["drag_target"] == "bp":
                     state["bead_level"] = ui.value_from_x(
-                        bp_track, ev.pos[0]) * BEAD_GLOW_MAX
+                        bp_track, ev_pos[0]) * BEAD_GLOW_MAX
                 elif state["drag_target"] == "vol":
-                    state["volume"] = ui.value_from_x(vol_track, ev.pos[0])
+                    state["volume"] = ui.value_from_x(vol_track, ev_pos[0])
                 elif state["drag_target"] == "drone":
                     state["drone_gain"] = ui.value_from_x(
-                        drone_track, ev.pos[0]) * DRONE_GAIN_MAX
+                        drone_track, ev_pos[0]) * DRONE_GAIN_MAX
                 elif state["drag_target"] == "chime":
                     state["chime_gain"] = ui.value_from_x(
-                        chime_track, ev.pos[0]) * CHIME_GAIN_MAX
+                        chime_track, ev_pos[0]) * CHIME_GAIN_MAX
                 elif state["drag_target"] == "m_noise":
-                    state["noise_max"] = min(meter_value(ev.pos[0]),
+                    state["noise_max"] = min(meter_value(ev_pos[0]),
                                              state["threshold"] - 0.03)
                 elif state["drag_target"] == "m_thr":
-                    state["threshold"] = max(meter_value(ev.pos[0]),
+                    state["threshold"] = max(meter_value(ev_pos[0]),
                                              state["noise_max"] + 0.03)
             elif ev.type == pygame.MOUSEMOTION and state["touch_edge"] is not None:
                 # drag the touch across the web (hand sliding over the strands)
-                if SIDEBAR_W <= ev.pos[0] < RIGHT_X:
-                    idx = pick_edge(ev.pos[0] - SIDEBAR_W, ev.pos[1])
+                if SIDEBAR_W <= ev_pos[0] < RIGHT_X:
+                    idx = pick_edge(ev_pos[0] - SIDEBAR_W, ev_pos[1])
                     if idx is not None:
                         state["touch_edge"] = idx
             elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
@@ -1105,7 +1126,7 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
         # ---- update the per-edge capacitance signal & threshold trigger ----
         if state["touch_edge"] is not None:
             signals.inject(state["touch_edge"], CLICK_AMP)
-        mxh, myh = pygame.mouse.get_pos()
+        mxh, myh = _mouse_pos()
         hand = (mxh - SIDEBAR_W, myh) if SIDEBAR_W <= mxh < RIGHT_X else None
         signals.update(t, hand)
         rising = signals.crossings(state["threshold"])
@@ -1225,7 +1246,7 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
                 pygame.draw.line(screen, STRAND, pos[a], pos[b], 1)
 
         tool = state["tool"]
-        mxy = pygame.mouse.get_pos()
+        mxy = _mouse_pos()
         if SIDEBAR_W <= mxy[0] < RIGHT_X:
             if tool in ("ripple_hops", "overlap"):
                 idx = pick_edge(mxy[0] - SIDEBAR_W, mxy[1])
@@ -1255,7 +1276,7 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
         pygame.draw.rect(screen, SIDEBAR_BG, (RIGHT_X, 0, RIGHT_W, win_h))
         pygame.draw.line(screen, DIVIDER, (SIDEBAR_W, 0), (SIDEBAR_W, win_h), 1)
         pygame.draw.line(screen, DIVIDER, (RIGHT_X, 0), (RIGHT_X, win_h), 1)
-        mouse_pos = pygame.mouse.get_pos()
+        mouse_pos = _mouse_pos()
 
         # ---- LEFT column: IMPULSE menu (one card behind the whole section) ----
         ui.draw_card(screen, pygame.Rect(impulse_panel.x, impulse_panel.y, SLW,
@@ -1423,7 +1444,7 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
 
         # chord dropdown options, drawn last so they overlay the controls below
         if state["chord_open"]:
-            mp = pygame.mouse.get_pos()
+            mp = _mouse_pos()
             for oi, (nm, _iv) in enumerate(opts):
                 r = option_rect(oi)
                 hovd = r.collidepoint(mp)
@@ -1432,6 +1453,8 @@ def run(config_path: str, serial_port: str | None = None, baud: int = 921600,
                 col = (255, 230, 140) if oi == state["chord_idx"] else TEXT
                 screen.blit(font.render(nm, True, col), (r.x + 8, r.y + 3))
 
+        if view_scale < 0.995:
+            pygame.transform.smoothscale(screen, scaled_size, display_surface)
         pygame.display.flip()
 
         if device is not None:
